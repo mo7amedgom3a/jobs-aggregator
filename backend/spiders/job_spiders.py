@@ -449,7 +449,8 @@ class LinkedInSpider(BaseJobSpider):
         # geo_id = os.getenv("LINKEDIN_GEO_ID", params.get("geoId", ["101131993"])[0])
         # distance = os.getenv("LINKEDIN_DISTANCE", params.get("distance", ["25"])[0])
         tpr = os.getenv("LINKEDIN_TPR", params.get("f_TPR", ["r86400"])[0])
-        f_wt = params.get("f_WT", [])
+        # f_WT=2 restricts LinkedIn to remote jobs.
+        f_wt = os.getenv("LINKEDIN_F_WT", params.get("f_WT", ["2"])[0])
 
         # Build parameters dictionary
         query_dict = {
@@ -457,10 +458,10 @@ class LinkedInSpider(BaseJobSpider):
             # "location": location,
             # "geoId": geo_id,
             # "distance": distance,
-            "f_TPR": tpr
+            "f_TPR": tpr,
         }
         if f_wt:
-            query_dict["f_WT"] = f_wt[0]
+            query_dict["f_WT"] = f_wt
 
         # Carry over other potential query parameters from the config URL
         for k, v in params.items():
@@ -515,6 +516,8 @@ class LinkedInSpider(BaseJobSpider):
             # Construct tags including listdate if present
             tags = []
             listdate = card.css("time::attr(datetime)").get("").strip()
+            if not listdate:
+                listdate = card.css("time::text").get("").strip()
             if listdate:
                 tags.append(f"Posted {listdate}")
 
@@ -525,6 +528,7 @@ class LinkedInSpider(BaseJobSpider):
                 "url":      url,
                 "tags":     tags,
                 "salary":   salary,
+                "date_posted": listdate,
             }
 
 
@@ -555,12 +559,16 @@ class IndeedSpider(BaseJobSpider):
         location = os.getenv("INDEED_LOCATION", params.get("l", [""])[0])
         fromage = os.getenv("INDEED_FROMAGE", params.get("fromage", ["3"])[0])
         limit = os.getenv("INDEED_LIMIT", params.get("limit", [""])[0])
+        # DSQF7 is Indeed's "Remote" attribute filter.
+        remote_filter = os.getenv("INDEED_SC", params.get("sc", ["0kf:attr(DSQF7);"])[0])
 
         query_dict = {
             "q": query,
             "l": location,
             "fromage": fromage,
         }
+        if remote_filter:
+            query_dict["sc"] = remote_filter
         if limit:
             query_dict["limit"] = limit
 
@@ -657,6 +665,15 @@ class IndeedSpider(BaseJobSpider):
             seen = set()
             tags = [t for t in tags if not (t in seen or seen.add(t))]
 
+            # Posting date: prefer a machine-readable value, then "X days ago" text.
+            import re
+            date_posted = card.css("span.date::text, span[data-testid*='date']::text, time::attr(datetime)").get("").strip()
+            if not date_posted:
+                for tag in tags:
+                    if re.search(r"\b(?:ago|yesterday|today|just posted)\b", tag, re.IGNORECASE):
+                        date_posted = tag
+                        break
+
             yield {
                 "title":        title,
                 "company":      company,
@@ -665,6 +682,7 @@ class IndeedSpider(BaseJobSpider):
                 "description":  description,
                 "tags":         tags,
                 "salary":       salary,
+                "date_posted":  date_posted,
             }
 
 

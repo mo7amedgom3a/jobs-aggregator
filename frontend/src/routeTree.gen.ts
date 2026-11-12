@@ -9,11 +9,23 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as YcFoundersRouteImport } from './routes/yc-founders'
+import { Route as HiringPostsRouteImport } from './routes/hiring-posts'
 import { Route as ControlRouteImport } from './routes/control'
 import { Route as CleanupRouteImport } from './routes/cleanup'
 import { Route as AggregationRouteImport } from './routes/aggregation'
 import { Route as IndexRouteImport } from './routes/index'
 
+const YcFoundersRoute = YcFoundersRouteImport.update({
+  id: '/yc-founders',
+  path: '/yc-founders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HiringPostsRoute = HiringPostsRouteImport.update({
+  id: '/hiring-posts',
+  path: '/hiring-posts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ControlRoute = ControlRouteImport.update({
   id: '/control',
   path: '/control',
@@ -40,12 +52,16 @@ export interface FileRoutesByFullPath {
   '/aggregation': typeof AggregationRoute
   '/cleanup': typeof CleanupRoute
   '/control': typeof ControlRoute
+  '/hiring-posts': typeof HiringPostsRoute
+  '/yc-founders': typeof YcFoundersRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/aggregation': typeof AggregationRoute
   '/cleanup': typeof CleanupRoute
   '/control': typeof ControlRoute
+  '/hiring-posts': typeof HiringPostsRoute
+  '/yc-founders': typeof YcFoundersRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +69,34 @@ export interface FileRoutesById {
   '/aggregation': typeof AggregationRoute
   '/cleanup': typeof CleanupRoute
   '/control': typeof ControlRoute
+  '/hiring-posts': typeof HiringPostsRoute
+  '/yc-founders': typeof YcFoundersRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/aggregation' | '/cleanup' | '/control'
+  fullPaths:
+    | '/'
+    | '/aggregation'
+    | '/cleanup'
+    | '/control'
+    | '/hiring-posts'
+    | '/yc-founders'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/aggregation' | '/cleanup' | '/control'
-  id: '__root__' | '/' | '/aggregation' | '/cleanup' | '/control'
+  to:
+    | '/'
+    | '/aggregation'
+    | '/cleanup'
+    | '/control'
+    | '/hiring-posts'
+    | '/yc-founders'
+  id:
+    | '__root__'
+    | '/'
+    | '/aggregation'
+    | '/cleanup'
+    | '/control'
+    | '/hiring-posts'
+    | '/yc-founders'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,10 +104,26 @@ export interface RootRouteChildren {
   AggregationRoute: typeof AggregationRoute
   CleanupRoute: typeof CleanupRoute
   ControlRoute: typeof ControlRoute
+  HiringPostsRoute: typeof HiringPostsRoute
+  YcFoundersRoute: typeof YcFoundersRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/yc-founders': {
+      id: '/yc-founders'
+      path: '/yc-founders'
+      fullPath: '/yc-founders'
+      preLoaderRoute: typeof YcFoundersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/hiring-posts': {
+      id: '/hiring-posts'
+      path: '/hiring-posts'
+      fullPath: '/hiring-posts'
+      preLoaderRoute: typeof HiringPostsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/control': {
       id: '/control'
       path: '/control'
@@ -107,6 +160,8 @@ const rootRouteChildren: RootRouteChildren = {
   AggregationRoute: AggregationRoute,
   CleanupRoute: CleanupRoute,
   ControlRoute: ControlRoute,
+  HiringPostsRoute: HiringPostsRoute,
+  YcFoundersRoute: YcFoundersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

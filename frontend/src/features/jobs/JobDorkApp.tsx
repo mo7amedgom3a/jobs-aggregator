@@ -17,9 +17,12 @@ const INITIAL: FormState = {
   keywords: [],
   countries: [],
   company: null,
-  remote: null,
+  remote: true,
   limit: 50,
   offset: 0,
+  sort: "score",
+  minScore: 0,
+  postedHours: 24,
 };
 
 const EMPTY_FILTERS: ClientFilters = {
@@ -45,7 +48,7 @@ const COUNTRY_FLAGS: Record<string, string> = {
 };
 
 type Status = "idle" | "loading" | "success" | "error";
-type Sort = "date" | "company";
+type Sort = "score" | "date" | "company";
 
 export function JobDorkApp() {
   const [form, setForm] = useState<FormState>(INITIAL);
@@ -54,7 +57,7 @@ export function JobDorkApp() {
   const [totalJobs, setTotalJobs] = useState(0);
   const [error, setError] = useState("");
   const [layout, setLayout] = useState<"grid" | "list">("grid");
-  const [sort, setSort] = useState<Sort>("date");
+  const [sort, setSort] = useState<Sort>("score");
   const [filters, setFilters] = useState<ClientFilters>(EMPTY_FILTERS);
   const [view, setView] = useState<"search" | "results">("search");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -158,23 +161,41 @@ export function JobDorkApp() {
       const compLower = (r.company || "").toLowerCase().trim();
       if (blacklist.some((scam) => compLower.includes(scam))) return false;
 
-      if (filters.remoteOnly && !(r.location?.toLowerCase().includes("remote") || r.is_remote)) return false;
+      const hay = `${r.location || ""} ${r.title || ""} ${(r.tags || []).join(" ")}`;
+      const onsiteOrHybrid = /hybrid|on[-\s]?site|in[-\s]?office|office[-\s]?based|in[-\s]?person|relocation|no\s+remote/i.test(hay);
+      const remoteSignal = /remote|work[\s-]?from[\s-]?home|wfh|anywhere|worldwide|telecommute|remote[-\s]?first|home[-\s]?based/i.test(hay);
+      const isRemote = remoteSignal && !onsiteOrHybrid;
+
+      if (form.remote === true && !isRemote) return false;
+      if (form.remote === false && isRemote) return false;
+
+      if (filters.remoteOnly && !isRemote) return false;
+      if (form.minScore > 0 && (r.score ?? 0) < form.minScore) return false;
       if (filters.companies.length && !filters.companies.includes(r.company)) return false;
       if (filters.locations.length && !filters.locations.includes(r.location)) return false;
       if (filters.tags.length && !filters.tags.some((t) => r.tags?.includes(t))) return false;
 
       return true;
     });
-  }, [allJobs, filters]);
+  }, [allJobs, filters, form.minScore]);
 
   // Derived: fully filtered + sorted for display
   const visible = useMemo(() => {
     let out = [...filteredBySidebar];
 
-    if (sort === "date") {
+    if (sort === "score") {
       out.sort((a, b) => {
-        const da = a.scraped_at ? new Date(a.scraped_at).getTime() : 0;
-        const db = b.scraped_at ? new Date(b.scraped_at).getTime() : 0;
+        const sa = typeof a.score === "number" ? a.score : 0;
+        const sb = typeof b.score === "number" ? b.score : 0;
+        if (sb !== sa) return sb - sa;
+        const da = a.posted_at || a.scraped_at ? new Date(a.posted_at || a.scraped_at).getTime() : 0;
+        const db = b.posted_at || b.scraped_at ? new Date(b.posted_at || b.scraped_at).getTime() : 0;
+        return db - da;
+      });
+    } else if (sort === "date") {
+      out.sort((a, b) => {
+        const da = a.posted_at || a.scraped_at ? new Date(a.posted_at || a.scraped_at).getTime() : 0;
+        const db = b.posted_at || b.scraped_at ? new Date(b.posted_at || b.scraped_at).getTime() : 0;
         return db - da;
       });
     } else if (sort === "company") {
@@ -193,10 +214,12 @@ export function JobDorkApp() {
         .map((jb) => {
           const matchedJobs = jb.jobs.filter((j) => visibleIds.has(j.id));
           const sortedJobs = [...matchedJobs];
-          if (sort === "date") {
+          if (sort === "score") {
+            sortedJobs.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+          } else if (sort === "date") {
             sortedJobs.sort((a, b) => {
-              const da = a.scraped_at ? new Date(a.scraped_at).getTime() : 0;
-              const db = b.scraped_at ? new Date(b.scraped_at).getTime() : 0;
+              const da = a.posted_at || a.scraped_at ? new Date(a.posted_at || a.scraped_at).getTime() : 0;
+              const db = b.posted_at || b.scraped_at ? new Date(b.posted_at || b.scraped_at).getTime() : 0;
               return db - da;
             });
           } else if (sort === "company") {
@@ -347,6 +370,18 @@ export function JobDorkApp() {
         remove: () => patchFilters({ remoteOnly: false }),
       });
     }
+    if (form.minScore > 0) {
+      pills.push({
+        id: "min-score",
+        label: `Score ≥ ${form.minScore}`,
+        remove: () => patchForm({ minScore: 0 }),
+      });
+    }
+    pills.push({
+      id: "freshness",
+      label: `Last ${form.postedHours || 24}h`,
+      remove: () => patchForm({ postedHours: 24 }),
+    });
     return pills;
   }, [form, filters, patchForm, patchFilters]);
 
@@ -390,6 +425,8 @@ export function JobDorkApp() {
                 </li>
                 {form.countries.length > 0 && <li>Countries: {form.countries.join(", ")}</li>}
                 {form.company && <li>Company: {form.company}</li>}
+                <li>Freshness: last {form.postedHours || 24}h only</li>
+                {form.minScore > 0 && <li>Minimum score: {form.minScore}</li>}
               </ul>
               <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
                 <button className="jd-btn ghost" onClick={() => setView("search")}>
@@ -438,6 +475,7 @@ export function JobDorkApp() {
                   value={sort}
                   onChange={(e) => setSort(e.target.value as Sort)}
                 >
+                  <option value="score">Best match (score)</option>
                   <option value="date">Date Posted</option>
                   <option value="company">Company (A→Z)</option>
                 </select>

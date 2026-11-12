@@ -6,15 +6,22 @@ import type {
   CacheStatsResponse,
   ClearCacheResponse,
   DeleteOldJobsResponse,
+  HiringPostsResponse,
+  SocialScanRequest,
+  SocialScanResponse,
+  SocialStatusResponse,
 } from "./types";
 
 const STORAGE_KEY = "jobdork_api_base";
-const DEFAULT_BASE = "http://127.0.0.1:8000";
+const DEFAULT_BASE = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8001").replace(/\/$/, "");
+
+// Older builds defaulted to :8000; migrate any value saved from that default.
+const LEGACY_DEFAULTS = new Set(["http://localhost:8000", "http://127.0.0.1:8000"]);
 
 export function getApiBase(): string {
   if (typeof window === "undefined") return DEFAULT_BASE;
   const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "http://localhost:8000") return DEFAULT_BASE;
+  if (stored && LEGACY_DEFAULTS.has(stored)) return DEFAULT_BASE;
   return stored || DEFAULT_BASE;
 }
 
@@ -33,6 +40,9 @@ export async function postJobSearch(form: FormState, signal?: AbortSignal): Prom
     remote: form.remote,
     limit: form.limit,
     offset: form.offset,
+    sort: form.sort,
+    min_score: form.minScore > 0 ? form.minScore : null,
+    posted_hours: form.postedHours || 24,
   };
 
   const res = await fetch(`${base}/search`, {
@@ -148,6 +158,56 @@ export async function deleteOldJobs(
     throw new Error(`API ${res.status}: ${text || res.statusText}`);
   }
   return res.json() as Promise<DeleteOldJobsResponse>;
+}
+
+// ─── Social hiring posts ─────────────────────────────────────────────────────
+
+export async function getHiringPosts(
+  params: { platform?: string; keywords?: string[]; minScore?: number; limit?: number; offset?: number },
+  signal?: AbortSignal
+): Promise<HiringPostsResponse> {
+  const base = getApiBase();
+  const url = new URL(`${base}/search/social`);
+  if (params.platform && params.platform !== "all") url.searchParams.append("platform", params.platform);
+  if (params.keywords?.length) url.searchParams.append("keywords", params.keywords.join(","));
+  if (params.minScore !== undefined && params.minScore > 0) url.searchParams.append("min_score", String(params.minScore));
+  url.searchParams.append("limit", String(params.limit ?? 50));
+  url.searchParams.append("offset", String(params.offset ?? 0));
+
+  const res = await fetch(url.toString(), { signal });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+  }
+  return res.json() as Promise<HiringPostsResponse>;
+}
+
+export async function runSocialScan(
+  req: SocialScanRequest,
+  signal?: AbortSignal
+): Promise<SocialScanResponse> {
+  const base = getApiBase();
+  const res = await fetch(`${base}/search/social/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+  }
+  return res.json() as Promise<SocialScanResponse>;
+}
+
+export async function getSocialStatus(signal?: AbortSignal): Promise<SocialStatusResponse> {
+  const base = getApiBase();
+  const res = await fetch(`${base}/search/social/status`, { signal });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+  }
+  return res.json() as Promise<SocialStatusResponse>;
 }
 
 

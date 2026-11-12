@@ -123,12 +123,15 @@ class JobOrchestrator:
 
     def _build_env_overrides(self, req: SearchRequest, keywords: list[str]) -> dict[str, str]:
         search_term = " OR ".join([f'"{keyword}"' if " " in keyword else keyword for keyword in keywords])
-        hours_old = 24 if req.recent_hours == 24 else 72
         return {
             "LINKEDIN_KEYWORDS": search_term,
-            "LINKEDIN_TPR": "r86400" , # if hours_old == 24 else "r86400"
+            # Always restrict LinkedIn to the last 24 hours and remote jobs.
+            "LINKEDIN_TPR": "r86400",
+            "LINKEDIN_F_WT": "2",
             "INDEED_QUERY": search_term,
-            "INDEED_FROMAGE": "1" if hours_old == 24 else "3",
+            # Indeed: 1 = last 24 hours, DSQF7 = Remote attribute.
+            "INDEED_FROMAGE": "1",
+            "INDEED_SC": "0kf:attr(DSQF7);",
             "INDEED_LIMIT": str(DEFAULT_INDEED_LIMIT),
             "MAX_PAGES": str(DEFAULT_MAX_PAGES),
         }

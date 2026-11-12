@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
+from urllib.parse import urlsplit
 
 try:
     import psycopg
@@ -22,6 +24,27 @@ logger = logging.getLogger("job_aggregator.repository.jobs")
 DEFAULT_DATABASE_URL = "postgresql://job_user:job_password@postgres:5432/job_automation"
 from config.settings import DEFAULT_SEARCH_LIMIT, DEFAULT_SEARCH_OFFSET
 
+#: Errors worth retrying while PostgreSQL is still starting up.
+_RETRYABLE_CONNECT_ERRORS = (psycopg.OperationalError,) if psycopg is not None else ()
+
+_UNRESOLVED_HOST_HINT = (
+    "If the hostname cannot be resolved, you are probably running the backend "
+    "outside Docker while DATABASE_URL still points at the compose service name. "
+    "Use 127.0.0.1 with the published port (5433) from backend/.env."
+)
+
+
+def describe_database_url(url: str) -> str:
+    """Return a log-safe ``host:port/database`` summary (never the password)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<invalid DATABASE_URL>"
+    host = parts.hostname or "<missing-host>"
+    port = parts.port or 5432
+    database = (parts.path or "/").lstrip("/") or "<missing-db>"
+    return f"{host}:{port}/{database}"
+
 
 class JobRepository:
     """Synchronous repository used by both FastAPI services and spider hooks."""
@@ -33,43 +56,113 @@ class JobRepository:
     def _connect(self) -> Iterator:
         if psycopg is None:
             raise RuntimeError("psycopg is not installed. Install psycopg[binary] to use PostgreSQL.")
-        with psycopg.connect(self.database_url, row_factory=dict_row) as conn:
+        with psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=5) as conn:
             yield conn
 
-    def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id BIGSERIAL PRIMARY KEY,
-                    fingerprint TEXT NOT NULL UNIQUE,
-                    title TEXT NOT NULL,
-                    company TEXT,
-                    location TEXT,
-                    url TEXT NOT NULL,
-                    description TEXT,
-                    tags TEXT,
-                    salary TEXT,
-                    source TEXT NOT NULL,
-                    scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
+    def init_schema(self, attempts: int = 5, delay_seconds: float = 2.0) -> None:
+        """Create the schema, retrying while PostgreSQL finishes starting up."""
+        endpoint = describe_database_url(self.database_url)
+        last_error: Exception | None = None
 
-                CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs (fingerprint);
-                CREATE INDEX IF NOT EXISTS idx_jobs_scraped_at ON jobs (scraped_at);
-                CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs (source);
+        for attempt in range(1, attempts + 1):
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS jobs (
+                            id BIGSERIAL PRIMARY KEY,
+                            fingerprint TEXT NOT NULL UNIQUE,
+                            title TEXT NOT NULL,
+                            company TEXT,
+                            location TEXT,
+                            url TEXT NOT NULL,
+                            description TEXT,
+                            tags TEXT,
+                            salary TEXT,
+                            source TEXT NOT NULL,
+                            posted_at TIMESTAMPTZ,
+                            score DOUBLE PRECISION,
+                            relevance DOUBLE PRECISION,
+                            authenticity DOUBLE PRECISION,
+                            verdict TEXT,
+                            score_reasons TEXT,
+                            scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
 
-                CREATE TABLE IF NOT EXISTS scrape_runs (
-                    id BIGSERIAL PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    finished_at TIMESTAMPTZ,
-                    items_new INTEGER DEFAULT 0,
-                    items_dupe INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'running'
-                );
-                """
-            )
-        logger.info("PostgreSQL schema is ready.")
+                        -- Additive migrations for databases created before scoring.
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION;
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS relevance DOUBLE PRECISION;
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS authenticity DOUBLE PRECISION;
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS verdict TEXT;
+                        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_reasons TEXT;
+
+                        CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs (fingerprint);
+                        CREATE INDEX IF NOT EXISTS idx_jobs_scraped_at ON jobs (scraped_at);
+                        CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs (source);
+                        CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs (posted_at);
+                        CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs (score DESC);
+
+                        CREATE TABLE IF NOT EXISTS scrape_runs (
+                            id BIGSERIAL PRIMARY KEY,
+                            source TEXT NOT NULL,
+                            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            finished_at TIMESTAMPTZ,
+                            items_new INTEGER DEFAULT 0,
+                            items_dupe INTEGER DEFAULT 0,
+                            status TEXT DEFAULT 'running'
+                        );
+
+                        CREATE TABLE IF NOT EXISTS hiring_posts (
+                            id BIGSERIAL PRIMARY KEY,
+                            fingerprint TEXT NOT NULL UNIQUE,
+                            platform TEXT NOT NULL,
+                            author TEXT,
+                            author_url TEXT,
+                            text TEXT,
+                            post_url TEXT NOT NULL,
+                            posted_at TIMESTAMPTZ,
+                            keywords_matched TEXT,
+                            score DOUBLE PRECISION,
+                            relevance DOUBLE PRECISION,
+                            authenticity DOUBLE PRECISION,
+                            verdict TEXT,
+                            score_reasons TEXT,
+                            scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_hiring_posts_platform ON hiring_posts (platform);
+                        CREATE INDEX IF NOT EXISTS idx_hiring_posts_posted_at ON hiring_posts (posted_at);
+                        CREATE INDEX IF NOT EXISTS idx_hiring_posts_score ON hiring_posts (score DESC);
+                        """
+                    )
+                logger.info("PostgreSQL schema is ready (%s).", endpoint)
+                return
+            except _RETRYABLE_CONNECT_ERRORS as exc:
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                logger.warning(
+                    "PostgreSQL not reachable at %s (attempt %d/%d): %s. Retrying in %.0fs...",
+                    endpoint,
+                    attempt,
+                    attempts,
+                    exc,
+                    delay_seconds,
+                )
+                time.sleep(delay_seconds)
+
+        logger.error(
+            "Could not connect to PostgreSQL at %s. Start it with "
+            "'docker compose up -d postgres' and check DATABASE_URL in backend/.env. "
+            "%s Last error: %s",
+            endpoint,
+            _UNRESOLVED_HOST_HINT,
+            last_error,
+        )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"Could not connect to PostgreSQL at {endpoint}.")
 
     def is_duplicate(self, fingerprint: str, dedup_window_hours: int = 24) -> bool:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=dedup_window_hours)
@@ -99,13 +192,21 @@ class JobRepository:
         tags = job.get("tags", [])
         tags_value = ",".join(tags) if isinstance(tags, list) else str(tags or "")
 
+        # Score the job once at ingestion time so ranking survives in the DB.
+        from services.filters import parse_posted_at
+        from services.scoring import score_job
+
+        posted_at = parse_posted_at(job.get("posted_at") or job.get("date_posted"))
+        breakdown = score_job(job, keywords=job.get("_keywords"))
+
         with self._connect() as conn:
             row = conn.execute(
                 """
                 INSERT INTO jobs
-                    (fingerprint, title, company, location, url, description, tags, salary, source)
+                    (fingerprint, title, company, location, url, description, tags, salary, source,
+                     posted_at, score, relevance, authenticity, verdict, score_reasons)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (fingerprint) DO NOTHING
                 RETURNING id
                 """,
@@ -119,6 +220,12 @@ class JobRepository:
                     tags_value,
                     job.get("salary", ""),
                     source,
+                    posted_at,
+                    breakdown.score,
+                    breakdown.relevance,
+                    breakdown.authenticity,
+                    breakdown.verdict,
+                    " | ".join(breakdown.reasons),
                 ),
             ).fetchone()
         return row is not None, fingerprint
@@ -151,11 +258,11 @@ class JobRepository:
     def recent_jobs(self, hours: int = 24, source: str | None = None) -> list[dict]:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         params: list[object] = [cutoff]
-        query = "SELECT * FROM jobs WHERE scraped_at >= %s"
+        query = "SELECT * FROM jobs WHERE COALESCE(posted_at, scraped_at) >= %s"
         if source:
             query += " AND source = %s"
             params.append(source)
-        query += " ORDER BY scraped_at DESC"
+        query += " ORDER BY COALESCE(posted_at, scraped_at) DESC"
 
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -220,10 +327,24 @@ class JobRepository:
         remote: bool | None = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
         offset: int = DEFAULT_SEARCH_OFFSET,
+        posted_hours: int | None = 24,
+        min_score: float | None = None,
+        sort_by: str = "score",
     ) -> tuple[list[dict], int]:
         where_clauses = []
         params = []
-        
+
+        if posted_hours is not None:
+            from datetime import datetime, timedelta, timezone
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=posted_hours)
+            where_clauses.append("COALESCE(posted_at, scraped_at) >= %s")
+            params.append(cutoff)
+
+        if min_score is not None:
+            where_clauses.append("COALESCE(score, 0) >= %s")
+            params.append(float(min_score))
+
         if keywords:
             keyword_clauses = []
             for kw in keywords:
@@ -277,12 +398,49 @@ class JobRepository:
             params.append(f"%{company}%")
             
         if remote is not None:
+            remote_terms = [
+                "remote",
+                "work from home",
+                "wfh",
+                "anywhere",
+                "worldwide",
+                "telecommute",
+                "remote-first",
+                "home-based",
+                "distributed",
+            ]
+            onsite_terms = [
+                "hybrid",
+                "on-site",
+                "onsite",
+                "in-office",
+                "office-based",
+                "in person",
+                "relocation",
+                "no remote",
+            ]
+            # Location/title/tags are the reliable fields; descriptions are noisy.
+            columns = ("location", "title", "tags")
+
+            positive_clauses = []
+            for term in remote_terms:
+                positive_clauses.append(
+                    "(" + " OR ".join(f"{col} ILIKE %s" for col in columns) + ")"
+                )
+                params.extend([f"%{term}%"] * len(columns))
+            positive_sql = "(" + " OR ".join(positive_clauses) + ")"
+
             if remote:
-                where_clauses.append("(location ILIKE %s OR tags ILIKE %s OR title ILIKE %s)")
-                params.extend(["%remote%", "%remote%", "%remote%"])
+                negative_clauses = []
+                for term in onsite_terms:
+                    negative_clauses.append(
+                        "(" + " OR ".join(f"{col} ILIKE %s" for col in columns) + ")"
+                    )
+                    params.extend([f"%{term}%"] * len(columns))
+                negative_sql = "(" + " OR ".join(negative_clauses) + ")"
+                where_clauses.append(f"{positive_sql} AND NOT {negative_sql}")
             else:
-                where_clauses.append("(location NOT ILIKE %s AND tags NOT ILIKE %s AND title NOT ILIKE %s)")
-                params.extend(["%remote%", "%remote%", "%remote%"])
+                where_clauses.append(f"NOT {positive_sql}")
 
         where_str = ""
         if where_clauses:
@@ -292,7 +450,15 @@ class JobRepository:
         count_query = f"SELECT COUNT(*) as count FROM jobs WHERE 1=1{where_str}"
         
         # 2. Get paginated results
-        results_query = f"SELECT * FROM jobs WHERE 1=1{where_str} ORDER BY scraped_at DESC LIMIT %s OFFSET %s"
+        order_by = (
+            "COALESCE(score, 0) DESC, COALESCE(posted_at, scraped_at) DESC"
+            if sort_by == "score"
+            else "COALESCE(posted_at, scraped_at) DESC, COALESCE(score, 0) DESC"
+        )
+        results_query = (
+            f"SELECT * FROM jobs WHERE 1=1{where_str} "
+            f"ORDER BY {order_by} LIMIT %s OFFSET %s"
+        )
         results_params = params + [limit, offset]
 
         with self._connect() as conn:
@@ -304,6 +470,206 @@ class JobRepository:
             jobs = [dict(row) for row in rows]
             
         return jobs, total_count
+
+    # ── Social hiring posts ────────────────────────────────────────────────
+
+    def backfill_scores(self, limit: int = 5000) -> int:
+        """Score legacy job rows that were stored before the scoring layer existed."""
+        from services.scoring import score_job
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE score IS NULL OR verdict IS NULL LIMIT %s",
+                (limit,),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            updated = 0
+            for row in rows:
+                job = dict(row)
+                tags = job.get("tags") or ""
+                if isinstance(tags, str):
+                    job["tags"] = [t for t in tags.split(",") if t]
+                breakdown = score_job(job)
+                conn.execute(
+                    """
+                    UPDATE jobs
+                       SET score = %s, relevance = %s, authenticity = %s,
+                           verdict = %s, score_reasons = %s
+                     WHERE id = %s
+                    """,
+                    (
+                        breakdown.score,
+                        breakdown.relevance,
+                        breakdown.authenticity,
+                        breakdown.verdict,
+                        " | ".join(breakdown.reasons),
+                        job["id"],
+                    ),
+                )
+                updated += 1
+
+        logger.info("Backfilled scores for %d legacy jobs", updated)
+        return updated
+
+    @staticmethod
+    def post_fingerprint(post: dict) -> str:
+        import re
+
+        author = str(post.get("author") or "").strip().lower()
+        # Normalise punctuation differences ("Name ·", "Name", "Name @handle").
+        author = re.sub(r"[^\w\s@]+$", "", author).strip()
+        url = str(post.get("post_url") or post.get("url") or "").strip().lower()
+        url = url.split("?")[0].rstrip("/")
+        text = re.sub(r"\s+", " ", str(post.get("text") or "")).strip().lower()[:180]
+        raw = "|".join(
+            [
+                str(post.get("platform") or "").strip().lower(),
+                url,
+                author,
+                text,
+            ]
+        )
+        return hashlib.sha1(raw.encode()).hexdigest()
+
+    def save_hiring_post(self, post: dict) -> tuple[bool, str]:
+        """Persist a scored social hiring post. Returns (was_new, fingerprint)."""
+        from services.filters import parse_posted_at
+        from services.scoring import score_hiring_post
+
+        fingerprint = self.post_fingerprint(post)
+        existing = None
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM hiring_posts WHERE fingerprint = %s LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+        if existing is not None:
+            return False, fingerprint
+
+        posted_at = parse_posted_at(post.get("posted_at"))
+        breakdown = post.get("_breakdown") or score_hiring_post(
+            post, keywords=post.get("_keywords")
+        )
+        keywords_value = post.get("keywords_matched") or []
+        if isinstance(keywords_value, (list, tuple)):
+            keywords_value = ",".join(str(k) for k in keywords_value)
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO hiring_posts
+                    (fingerprint, platform, author, author_url, text, post_url, posted_at,
+                     keywords_matched, score, relevance, authenticity, verdict, score_reasons)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (fingerprint) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    fingerprint,
+                    post.get("platform", ""),
+                    post.get("author", ""),
+                    post.get("author_url", ""),
+                    post.get("text", ""),
+                    post.get("post_url") or post.get("url", ""),
+                    posted_at,
+                    keywords_value,
+                    breakdown.score,
+                    breakdown.relevance,
+                    breakdown.authenticity,
+                    breakdown.verdict,
+                    " | ".join(breakdown.reasons),
+                ),
+            ).fetchone()
+        return row is not None, fingerprint
+
+    def search_hiring_posts(
+        self,
+        platform: str | None = None,
+        keywords: list[str] | None = None,
+        min_score: float | None = None,
+        posted_hours: int | None = 24,
+        limit: int = 50,
+        offset: int = 0,
+        remote_only: bool = True,
+    ) -> tuple[list[dict], int]:
+        where_clauses = []
+        params: list[object] = []
+
+        if posted_hours is not None:
+            from datetime import datetime, timedelta, timezone
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=posted_hours)
+            where_clauses.append("COALESCE(posted_at, scraped_at) >= %s")
+            params.append(cutoff)
+
+        if remote_only:
+            remote_terms = [
+                "remote",
+                "work from home",
+                "wfh",
+                "anywhere",
+                "worldwide",
+                "telecommute",
+                "remote-first",
+                "home-based",
+            ]
+            onsite_terms = ["hybrid", "on-site", "onsite", "in-office", "office-based", "in person"]
+            positive = []
+            for term in remote_terms:
+                positive.append("text ILIKE %s")
+                params.append(f"%{term}%")
+            negative = []
+            for term in onsite_terms:
+                negative.append("text ILIKE %s")
+                params.append(f"%{term}%")
+            where_clauses.append(
+                "(" + " OR ".join(positive) + ") AND NOT (" + " OR ".join(negative) + ")"
+            )
+
+        if platform and platform.lower() != "all":
+            where_clauses.append("platform = %s")
+            params.append(platform.lower())
+
+        if min_score is not None:
+            where_clauses.append("COALESCE(score, 0) >= %s")
+            params.append(float(min_score))
+
+        if keywords:
+            keyword_clauses = []
+            for kw in keywords:
+                if kw.strip():
+                    keyword_clauses.append("(text ILIKE %s OR keywords_matched ILIKE %s)")
+                    like = f"%{kw.strip()}%"
+                    params.extend([like, like])
+            if keyword_clauses:
+                where_clauses.append("(" + " OR ".join(keyword_clauses) + ")")
+
+        where_str = ""
+        if where_clauses:
+            where_str = " AND " + " AND ".join(where_clauses)
+
+        count_query = f"SELECT COUNT(*) AS count FROM hiring_posts WHERE 1=1{where_str}"
+        results_query = (
+            f"SELECT * FROM hiring_posts WHERE 1=1{where_str} "
+            "ORDER BY COALESCE(score, 0) DESC, COALESCE(posted_at, scraped_at) DESC "
+            "LIMIT %s OFFSET %s"
+        )
+        results_params = params + [limit, offset]
+
+        with self._connect() as conn:
+            count_row = conn.execute(count_query, params).fetchone()
+            total = int(count_row["count"]) if count_row else 0
+            rows = conn.execute(results_query, results_params).fetchall()
+        return [dict(row) for row in rows], total
+
+    def recent_hiring_posts(self, hours: int = 24, platform: str | None = None) -> list[dict]:
+        posts, _ = self.search_hiring_posts(
+            platform=platform, posted_hours=hours, limit=500, offset=0
+        )
+        return posts
 
     @staticmethod
     def fingerprint(job: dict, source: str | None = None) -> str:

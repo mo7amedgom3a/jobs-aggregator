@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from dotenv import load_dotenv
-load_dotenv()
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from cache.cache import DeduplicationCache
 from dork_builder import DorkQueryBuilder
 from google_api_search_engine import GoogleApiSearcher
 from parser import JobResultParser
 from repository.jobs import JobRepository
+from repository.yc import YCRepository
 from services.google_search import GoogleJobSearchService
 from services.orchestrator import JobOrchestrator
 from services.spider_runner import SpiderRunner
@@ -19,6 +23,7 @@ _parser = JobResultParser()
 _cache = DeduplicationCache()
 _google_searcher = GoogleApiSearcher()
 _repository = JobRepository()
+_yc_repository = YCRepository()
 
 
 def get_dork_builder() -> DorkQueryBuilder:
@@ -39,6 +44,10 @@ def get_google_searcher() -> GoogleApiSearcher:
 
 def get_job_repository() -> JobRepository:
     return _repository
+
+
+def get_yc_repository() -> YCRepository:
+    return _yc_repository
 
 
 def get_google_job_search_service() -> GoogleJobSearchService:

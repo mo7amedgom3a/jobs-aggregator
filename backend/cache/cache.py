@@ -144,12 +144,22 @@ class DeduplicationCache:
             logger.warning("redis package is not installed; using in-memory cache fallback.")
             return None
         try:
-            client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+            client = redis.Redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
             client.ping()
             logger.info("Connected to Redis cache at %s", self.redis_url)
             return client
         except Exception as exc:
             if os.getenv("CACHE_REQUIRE_REDIS", "false").lower() == "true":
                 raise
-            logger.warning("Redis cache unavailable (%s); using in-memory cache fallback.", exc)
+            logger.warning(
+                "Redis cache unavailable at %s (%s); using in-memory cache fallback. "
+                "Start it with 'docker compose up -d redis' and check REDIS_URL in backend/.env.",
+                self.redis_url,
+                exc,
+            )
             return None

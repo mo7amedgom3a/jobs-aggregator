@@ -266,9 +266,12 @@ class JobSearchRequest(BaseModel):
     keywords: Optional[list[str]] = Field(None, description="List of keywords to match in title, description, or tags.", examples=[["python", "devops"]])
     countries: Optional[list[str]] = Field(None, description="Filter jobs by one or more country names (matched against location/tags/source).", examples=[["egypt", "germany"]])
     company: Optional[str] = Field(None, description="Filter jobs by hiring company name.", examples=["Google"])
-    remote: Optional[bool] = Field(None, description="Filter remote jobs. If true, only remote jobs. If false, only non-remote.", examples=[True])
+    remote: Optional[bool] = Field(True, description="Remote filter. Defaults to true (remote-only); set false to include onsite/hybrid roles.", examples=[True])
     limit: int = Field(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT, description="Maximum number of results to return.", examples=[DEFAULT_SEARCH_LIMIT])
     offset: int = Field(DEFAULT_SEARCH_OFFSET, ge=0, description="Offset for pagination.", examples=[DEFAULT_SEARCH_OFFSET])
+    posted_hours: int = Field(24, ge=1, le=24, description="Only return jobs posted within this many hours (hard-capped at 24).", examples=[24])
+    min_score: Optional[float] = Field(None, ge=0, le=10, description="Only return jobs whose relevance/authenticity score is at least this value.", examples=[4.0])
+    sort: str = Field("score", description="Result ordering: 'score' (best first) or 'recent' (newest first).", examples=["score", "recent"])
 
 
 class SubAggregateRequest(BaseModel):
@@ -298,6 +301,55 @@ class JobItem(BaseModel):
     site: str = Field(description="Alias / site domain.")
     tags: list[str] = Field(description="Associated tag list.")
     scraped_at: str = Field(description="ISO timestamp when the job was scraped.")
+    posted_at: Optional[str] = Field(None, description="ISO timestamp when the job was originally posted, if known.")
+    score: Optional[float] = Field(None, description="Composite ranking score (0-10): relevance + authenticity.")
+    relevance: Optional[float] = Field(None, description="Keyword/relevance score (0-10).")
+    authenticity: Optional[float] = Field(None, description="Legitimacy score (0-10); lower means suspicious.")
+    verdict: Optional[str] = Field(None, description="Authenticity verdict: legit, suspicious, or likely_scam.")
+    reasons: list[str] = Field(default_factory=list, description="Human-readable reasons behind the score.")
+
+
+class HiringPost(BaseModel):
+    id: str = Field(description="Stable fingerprint for the post.")
+    platform: str = Field(description="Social platform (linkedin or x).")
+    author: str = Field(description="Post author display name/handle.")
+    author_url: Optional[str] = Field(None, description="URL to the author profile.")
+    text: str = Field(description="Post body text.")
+    post_url: str = Field(description="Direct URL to the post.")
+    posted_at: Optional[str] = Field(None, description="ISO timestamp when the post was published.")
+    keywords_matched: list[str] = Field(default_factory=list, description="Hiring phrases / keywords found in the post.")
+    scraped_at: Optional[str] = Field(None, description="ISO timestamp when the post was scraped.")
+    score: Optional[float] = Field(None, description="Composite ranking score (0-10).")
+    relevance: Optional[float] = Field(None, description="Relevance score (0-10).")
+    authenticity: Optional[float] = Field(None, description="Legitimacy score (0-10).")
+    verdict: Optional[str] = Field(None, description="Authenticity verdict: legit, suspicious, or likely_scam.")
+    reasons: list[str] = Field(default_factory=list, description="Human-readable reasons behind the score.")
+
+
+class HiringPostsResponse(BaseModel):
+    total: int = Field(description="Total matching hiring posts.")
+    limit: int = Field(description="Page size used for this request.")
+    offset: int = Field(description="Offset used for this request.")
+    posted_hours: int = Field(description="Recency window applied to the posts.")
+    posts: list[HiringPost] = Field(default_factory=list, description="Ranked hiring posts.")
+
+
+class SocialScanRequest(BaseModel):
+    keywords: list[str] = Field(default_factory=list, description="Keywords to search for alongside hiring phrases.", examples=[["devops", "python"]])
+    platforms: list[str] = Field(default_factory=lambda: ["linkedin", "x"], description="Platforms to scan (linkedin, x).", examples=[["linkedin"]])
+    max_posts: int = Field(40, ge=1, le=200, description="Maximum posts to collect per platform.")
+    location: Optional[str] = Field(None, description="Optional LinkedIn location filter.", examples=["Egypt"])
+
+
+class SocialScanResponse(BaseModel):
+    status: str = Field(description="Scan status (initiated or error).")
+    message: str = Field(description="Human-readable status message.")
+
+
+class SocialStatusResponse(BaseModel):
+    allowed: bool = Field(description="Whether social scanning is enabled in settings.")
+    platforms: dict[str, dict] = Field(description="Per-platform credentials/session status.")
+    state: dict = Field(description="Current/previous scan state and results.")
 
 
 class JobBoardGroup(BaseModel):

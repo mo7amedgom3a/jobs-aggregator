@@ -9,7 +9,21 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 
 from cache.cache import DeduplicationCache
 from dependencies import get_cache, get_google_job_search_service, get_orchestrator, get_job_repository
-from models.job import SearchRequest, SearchResponse, JobSearchRequest, CountryGroup, PaginatedSearchResponse, SubAggregateRequest, CountryInfo, CountriesResponse
+from models.job import (
+    SearchRequest,
+    SearchResponse,
+    JobSearchRequest,
+    CountryGroup,
+    PaginatedSearchResponse,
+    SubAggregateRequest,
+    CountryInfo,
+    CountriesResponse,
+    HiringPostsResponse,
+    HiringPost,
+    SocialScanRequest,
+    SocialScanResponse,
+    SocialStatusResponse,
+)
 from repository.jobs import JobRepository
 from services.google_search import GoogleJobSearchService
 from services.orchestrator import JobOrchestrator
@@ -73,16 +87,22 @@ def clean_job_board_name(source: str) -> str:
 
 
 def is_job_remote(job: dict) -> bool:
+    from services.filters import is_hybrid_or_onsite, is_remote_only
+
     title = (job.get("title") or "").lower()
     location = (job.get("location") or "").lower()
     tags = "".join(job.get("tags") or []).lower()
     source = (job.get("source") or "").lower()
-    
+
+    # Explicitly hybrid/onsite wins over any "remote" mention.
+    if is_hybrid_or_onsite(f"{title} {location} {tags}"):
+        return False
+
     remote_sources = {"remoteok", "weworkremotely", "jobicy", "remotive", "himalayas", "trueup"}
     if source in remote_sources:
         return True
-        
-    return "remote" in title or "remote" in location or "remote" in tags
+
+    return is_remote_only(job)
 
 
 @router.post(
@@ -96,6 +116,8 @@ async def search_jobs(
     repository: JobRepository = Depends(get_job_repository),
 ) -> dict[str, Any]:
     import hashlib
+    from services.scoring import score_job
+
     logger.info("Search request received: %s", req)
     db_jobs, total_count = repository.search_jobs(
         keywords=req.keywords,
@@ -104,6 +126,9 @@ async def search_jobs(
         remote=req.remote,
         limit=req.limit,
         offset=req.offset,
+        posted_hours=req.posted_hours,
+        min_score=req.min_score,
+        sort_by=req.sort,
     )
     
     grouped_data = {} # country -> job_board_name -> list of jobs
@@ -111,7 +136,13 @@ async def search_jobs(
     for row in db_jobs:
         tags_val = row.get("tags") or ""
         tags_list = tags_val.split(",") if tags_val else []
-        
+        posted_at_value = row.get("posted_at")
+        scraped_at_value = row.get("scraped_at")
+
+        def _iso(value: Any) -> str:
+            return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+        reasons_value = row.get("score_reasons") or ""
         job_dict = {
             "id": hashlib.md5(row.get("url", "").encode()).hexdigest(),
             "title": row.get("title", ""),
@@ -123,8 +154,32 @@ async def search_jobs(
             "source": row.get("source", ""),
             "site": row.get("source", ""),
             "tags": tags_list,
-            "scraped_at": row.get("scraped_at").isoformat() if hasattr(row.get("scraped_at"), "isoformat") else str(row.get("scraped_at")),
+            "scraped_at": _iso(scraped_at_value),
+            "posted_at": _iso(posted_at_value) if posted_at_value else _iso(scraped_at_value),
         }
+
+        # Backfill scores for rows ingested before scoring existed.
+        if row.get("score") is None:
+            breakdown = score_job(job_dict, keywords=req.keywords)
+            job_dict.update(
+                {
+                    "score": breakdown.score,
+                    "relevance": breakdown.relevance,
+                    "authenticity": breakdown.authenticity,
+                    "verdict": breakdown.verdict,
+                    "reasons": breakdown.reasons,
+                }
+            )
+        else:
+            job_dict.update(
+                {
+                    "score": round(row["score"], 2) if row.get("score") is not None else None,
+                    "relevance": round(row["relevance"], 2) if row.get("relevance") is not None else None,
+                    "authenticity": round(row["authenticity"], 2) if row.get("authenticity") is not None else None,
+                    "verdict": row.get("verdict"),
+                    "reasons": [r for r in reasons_value.split(" | ") if r],
+                }
+            )
         
         # Filter remote/non-remote based on requested parameter
         if req.remote is not None:
@@ -141,8 +196,14 @@ async def search_jobs(
     for country_name, boards in grouped_data.items():
         board_groups = []
         for board_name, jobs_list in boards.items():
-            # Sort jobs in each board by scraped_at DESC
-            jobs_list.sort(key=lambda x: x.get("scraped_at", ""), reverse=True)
+            # Sort jobs in each board by score or recency.
+            if req.sort == "recent":
+                jobs_list.sort(key=lambda x: x.get("posted_at") or x.get("scraped_at", ""), reverse=True)
+            else:
+                jobs_list.sort(
+                    key=lambda x: (x.get("score") or 0, x.get("posted_at") or x.get("scraped_at", "")),
+                    reverse=True,
+                )
             board_groups.append({
                 "name": board_name,
                 "jobs": jobs_list
@@ -193,6 +254,7 @@ async def run_full_aggregation(
         fingerprints = []
         for job in flat_jobs:
             source = job.get("source") or job.get("site") or "aggregate"
+            job["_keywords"] = req.keywords
             fp = repository.fingerprint(job, source=source)
             fingerprints.append(fp)
             repository.save_job(job, source=source)
@@ -251,6 +313,8 @@ def flatten_results(
     max_results: int,
     sources: list[str],
 ) -> list[dict[str, Any]]:
+    from services.scoring import score_and_annotate
+
     unified: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
@@ -261,8 +325,9 @@ def flatten_results(
                 continue
             seen_urls.add(url)
             job["site"] = source
-            unified.append(job)
+            unified.append(score_and_annotate(job))
 
+    unified.sort(key=lambda job: job.get("score", 0), reverse=True)
     return unified[:max_results]
 
 
@@ -383,6 +448,7 @@ async def run_sub_aggregation(
         fingerprints = []
         for job in flat_jobs:
             source = job.get("source") or job.get("site") or "aggregate"
+            job["_keywords"] = req.keywords
             fp = repository.fingerprint(job, source=source)
             fingerprints.append(fp)
             repository.save_job(job, source=source)
@@ -455,3 +521,152 @@ async def get_supported_countries() -> CountriesResponse:
         )
         
     return CountriesResponse(countries=country_info_dict)
+
+
+# ─── Social hiring posts (manual scans, 2-3 per day) ─────────────────────────
+
+
+def _serialize_hiring_post(row: dict) -> HiringPost:
+    def _iso(value: Any) -> str | None:
+        if value is None:
+            return None
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+    def _round(value: Any) -> float | None:
+        return round(float(value), 2) if value is not None else None
+
+    keywords_value = row.get("keywords_matched") or ""
+    if isinstance(keywords_value, str):
+        keywords = [k for k in keywords_value.split(",") if k]
+    else:
+        keywords = list(keywords_value)
+
+    reasons_value = row.get("score_reasons") or ""
+    reasons = [r for r in str(reasons_value).split(" | ") if r]
+    return HiringPost(
+        id=row.get("fingerprint") or str(row.get("id", "")),
+        platform=row.get("platform", ""),
+        author=row.get("author") or "",
+        author_url=row.get("author_url"),
+        text=row.get("text") or "",
+        post_url=row.get("post_url") or "",
+        posted_at=_iso(row.get("posted_at")),
+        keywords_matched=keywords,
+        scraped_at=_iso(row.get("scraped_at")),
+        score=_round(row.get("score")),
+        relevance=_round(row.get("relevance")),
+        authenticity=_round(row.get("authenticity")),
+        verdict=row.get("verdict"),
+        reasons=reasons,
+    )
+
+
+def run_social_scan(req: SocialScanRequest) -> None:
+    """Background worker for a manual social scan."""
+    from services.social import collect_social_posts
+
+    logger.info("Starting manual social scan for platforms=%s", req.platforms)
+    try:
+        summary = collect_social_posts(
+            keywords=req.keywords,
+            platforms=req.platforms,
+            max_posts=req.max_posts,
+            location=req.location,
+        )
+        logger.info("Manual social scan finished: %s", summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Manual social scan crashed: %s", exc, exc_info=True)
+
+
+@router.post(
+    "/social/run",
+    response_model=SocialScanResponse,
+    summary="Trigger a manual hiring-post scan (LinkedIn / X)",
+    description=(
+        "Starts a background scan of social hiring posts. Intended to be triggered "
+        "from the frontend a few times per day — it is not part of the hourly scheduler."
+    ),
+)
+async def scan_social_posts(
+    req: SocialScanRequest,
+    background_tasks: BackgroundTasks,
+) -> SocialScanResponse:
+    from config.settings import SOCIAL_ENABLED
+    from services.social import run_state
+
+    if not SOCIAL_ENABLED:
+        return SocialScanResponse(
+            status="error",
+            message="Social scanning is disabled. Set SOCIAL_ENABLED=true in backend/.env.",
+        )
+    state = run_state()
+    if state.get("running"):
+        return SocialScanResponse(
+            status="already_running",
+            message="A social scan is already running. Wait for it to finish.",
+        )
+
+    background_tasks.add_task(run_social_scan, req)
+    return SocialScanResponse(
+        status="initiated",
+        message=(
+            f"Scanning {', '.join(req.platforms)} for hiring posts from the last 24 hours. "
+            "This can take a minute — refresh the hiring-post results shortly."
+        ),
+    )
+
+
+@router.get(
+    "/social",
+    response_model=HiringPostsResponse,
+    summary="List ranked social hiring posts",
+    description="Returns hiring posts from the last 24 hours, ranked by relevance and authenticity.",
+)
+async def list_social_posts(
+    platform: str = "all",
+    keywords: str | None = None,
+    min_score: float | None = None,
+    posted_hours: int = 24,
+    limit: int = 50,
+    offset: int = 0,
+    remote_only: bool = True,
+    repository: JobRepository = Depends(get_job_repository),
+) -> HiringPostsResponse:
+    keyword_list = [k.strip() for k in (keywords or "").split(",") if k.strip()] or None
+    posted_hours = max(1, min(posted_hours, 24))
+    rows, total = repository.search_hiring_posts(
+        platform=platform,
+        keywords=keyword_list,
+        min_score=min_score,
+        posted_hours=posted_hours,
+        limit=limit,
+        offset=offset,
+        remote_only=remote_only,
+    )
+    return HiringPostsResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        posted_hours=posted_hours,
+        posts=[_serialize_hiring_post(row) for row in rows],
+    )
+
+
+@router.get(
+    "/social/status",
+    response_model=SocialStatusResponse,
+    summary="Social scan capability & state",
+    description="Reports whether LinkedIn/X credentials and saved sessions are available, plus the last scan result.",
+)
+async def social_status() -> SocialStatusResponse:
+    from services.social import platform_status
+
+    status = platform_status()
+    return SocialStatusResponse(
+        allowed=bool(status.get("enabled")),
+        platforms={
+            "linkedin": status.get("linkedin", {}),
+            "x": status.get("x", {}),
+        },
+        state=status.get("state", {}),
+    )

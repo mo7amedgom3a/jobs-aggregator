@@ -6,12 +6,27 @@ import indeedIcon from "@/asset/indeed.svg";
 
 interface Props { job: Job; index: number; layout: "grid" | "list"; }
 
+const VERDICT_META: Record<string, { label: string; className: string; title: string }> = {
+  legit: { label: "✓ Legit", className: "legit", title: "No authenticity red flags detected" },
+  suspicious: { label: "⚠ Suspicious", className: "suspicious", title: "Some signals look off — verify before applying" },
+  likely_scam: { label: "✗ Likely scam", className: "scam", title: "Multiple scam indicators detected" },
+};
+
+function scoreTone(score: number): string {
+  if (score >= 7) return "high";
+  if (score >= 4.5) return "mid";
+  return "low";
+}
+
 export function JobCard({ job, index, layout }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const rel = relativeTime(job.scraped_at);
+  const rel = relativeTime(job.posted_at || job.scraped_at);
   const isRemote = job.is_remote || (job.location && job.location.toLowerCase().includes("remote"));
   const siteClass = (job.site || "").toLowerCase();
   const platformLabel = SITE_LABEL[siteClass] ?? job.site;
+  const score = typeof job.score === "number" ? job.score : null;
+  const verdict = job.verdict ? VERDICT_META[job.verdict] : null;
+  const reasons = job.reasons?.filter(Boolean) ?? [];
 
   return (
     <article className="jd-jc" style={{ animationDelay: `${Math.min(index, 20) * 30}ms` }}>
@@ -44,11 +59,32 @@ export function JobCard({ job, index, layout }: Props) {
       <div className="jd-jc-tags">
         {isRemote && <span className="jd-mini cyan">Remote</span>}
         {job.easy_apply && <span className="jd-mini green">⚡ Easy Apply</span>}
+        {score !== null && (
+          <span
+            className={`jd-score-badge ${scoreTone(score)}`}
+            title={reasons.length ? reasons.join(" · ") : "Composite relevance + authenticity score"}
+          >
+            {score.toFixed(1)} / 10
+          </span>
+        )}
+        {verdict && (
+          <span className={`jd-verdict ${verdict.className}`} title={reasons.join(" · ") || verdict.title}>
+            {verdict.label}
+          </span>
+        )}
         {job.tags && job.tags.map((tag) => (
           <span key={tag} className="jd-mini muted">{tag}</span>
         ))}
         {rel && <span className="jd-mini muted mono">{rel}</span>}
       </div>
+
+      {verdict?.className !== "legit" && reasons.length > 0 && (
+        <div className="jd-score-reasons">
+          {reasons.slice(0, 3).map((reason) => (
+            <span key={reason}>{reason}</span>
+          ))}
+        </div>
+      )}
 
       {job.salary && job.salary !== "N/A" && <div className="jd-salary">{job.salary}</div>}
 

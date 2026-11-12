@@ -3,8 +3,15 @@ Central configuration for the Job Board Scraping Engine.
 Adjust per-site settings here without touching spider logic.
 """
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
+
+from dotenv import load_dotenv
+
+# Explicit path so settings also work when imported from outside backend/.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # ─── Fetcher Strategy ────────────────────────────────────────────────────────
 # "http"     → Fetcher       (fastest, for plain HTTP job boards)
@@ -262,11 +269,196 @@ SCHEDULE_INTERVAL_HOURS: int = 1      # run the full engine every hour
 CRAWL_DIR: str = "crawl_checkpoints"  # pause/resume state directory
 LOG_DIR: str = "logs"
 
-# ─── Storage ─────────────────────────────────────────────────────────────────
-import os
-from dotenv import load_dotenv
-load_dotenv()
+# ─── Recency & scoring ───────────────────────────────────────────────────────
+# Hard recency window (hours). Every job/post must be posted within this window.
+POSTED_HOURS: int = int(os.getenv("POSTED_HOURS", "24"))
+# When true, items whose posting date cannot be parsed are dropped.
+STRICT_RECENT: bool = os.getenv("STRICT_RECENT", "true").lower() in {"1", "true", "yes", "on"}
+# When true, only remote jobs/posts are kept (hybrid/onsite are rejected).
+REMOTE_ONLY: bool = os.getenv("REMOTE_ONLY", "true").lower() in {"1", "true", "yes", "on"}
 
+# Composite score = RELEVANCE_WEIGHT * relevance + AUTHENTICITY_WEIGHT * authenticity
+RELEVANCE_WEIGHT: float = float(os.getenv("RELEVANCE_WEIGHT", "0.6"))
+AUTHENTICITY_WEIGHT: float = float(os.getenv("AUTHENTICITY_WEIGHT", "0.4"))
+# Minimum composite score returned by /search when the request does not set one.
+DEFAULT_MIN_SCORE: float = float(os.getenv("DEFAULT_MIN_SCORE", "0"))
+
+# ─── Social "hiring posts" scraping ──────────────────────────────────────────
+# These run only when triggered from the frontend (2-3 times per day) — never
+# from the hourly scheduler — to avoid account rate limits.
+SOCIAL_ENABLED: bool = os.getenv("SOCIAL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+SOCIAL_MAX_POSTS_PER_PLATFORM: int = int(os.getenv("SOCIAL_MAX_POSTS_PER_PLATFORM", "40"))
+SOCIAL_HEADLESS: bool = os.getenv("SOCIAL_HEADLESS", "false").lower() in {"1", "true", "yes", "on"}
+SOCIAL_NAV_TIMEOUT_MS: int = int(os.getenv("SOCIAL_NAV_TIMEOUT_MS", "45000"))
+# Persisted Playwright storage state (cookies) so we do not log in every run.
+SOCIAL_SESSION_DIR: str = os.getenv(
+    "SOCIAL_SESSION_DIR",
+    str(Path(__file__).resolve().parent.parent / ".sessions"),
+)
+
+# Phrases that signal a hiring post on social platforms.
+HIRING_PHRASES: list[str] = [
+    "we are hiring",
+    "we're hiring",
+    "we are looking for",
+    "we're looking for",
+    "hiring now",
+    "hiring!",
+    "now hiring",
+    "job opening",
+    "job opportunity",
+    "open role",
+    "open position",
+    "join our team",
+    "join my team",
+    "looking to hire",
+    "actively hiring",
+    "immediate hiring",
+    "dm me",
+    "send your cv",
+    "send your resume",
+    "share your cv",
+    "share your resume",
+]
+
+
+def _load_local_auth() -> dict[str, str]:
+    """Parse the repo-local ``auth-access.txt`` credentials file.
+
+    The file uses a simple platform / field / value layout, for example::
+
+        linkedin
+        email
+        someone@example.com
+        password
+        secret
+
+    Environment variables always win over this file.
+    """
+    auth_path = Path(__file__).resolve().parent.parent.parent / "auth-access.txt"
+    values: dict[str, str] = {}
+    if not auth_path.exists():
+        return values
+
+    try:
+        lines = [
+            line.strip()
+            for line in auth_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        ]
+    except OSError:
+        return values
+
+    platform = ""
+    known_fields = {
+        "email",
+        "username",
+        "user",
+        "password",
+        "pass",
+        "token",
+        "cookie",
+        "cookies",
+    }
+    known_platforms = {"linkedin", "x", "twitter", "indeed", "google"}
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        lowered = line.lower()
+        if not line:
+            index += 1
+            continue
+        if lowered in known_platforms:
+            platform = "x" if lowered == "twitter" else lowered
+            index += 1
+            continue
+        if lowered in known_fields and index + 1 < len(lines):
+            value = lines[index + 1].strip()
+            if value and value.lower() not in known_fields and value.lower() not in known_platforms:
+                key = f"{platform}_{lowered}".strip("_")
+                values[key] = value
+                index += 2
+                continue
+        index += 1
+
+    return values
+
+
+_LOCAL_AUTH = _load_local_auth()
+
+LINKEDIN_EMAIL: str = os.getenv("LINKEDIN_EMAIL") or _LOCAL_AUTH.get("linkedin_email", "")
+LINKEDIN_PASSWORD: str = os.getenv("LINKEDIN_PASSWORD") or _LOCAL_AUTH.get("linkedin_password", "")
+LINKEDIN_COOKIES: str = os.getenv("LINKEDIN_COOKIES", "")
+X_USERNAME: str = (
+    os.getenv("X_USERNAME")
+    or os.getenv("X_EMAIL")
+    or _LOCAL_AUTH.get("x_username", "")
+    or _LOCAL_AUTH.get("x_email", "")
+)
+X_PASSWORD: str = os.getenv("X_PASSWORD") or _LOCAL_AUTH.get("x_password", "")
+X_COOKIES: str = os.getenv("X_COOKIES", "")
+
+# ─── YC founder sourcing & outreach ──────────────────────────────────────────
+# The pipeline is triggered manually from the frontend, never by the scheduler.
+YC_ENABLED: bool = os.getenv("YC_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+YC_API_BASE: str = os.getenv("YC_API_BASE", "https://api.ycombinator.com/v0.1")
+YC_SITE_BASE: str = os.getenv("YC_SITE_BASE", "https://www.ycombinator.com")
+# Human-readable batch names accepted by the public YC directory API.
+YC_BATCHES: list[str] = [
+    b.strip()
+    for b in os.getenv(
+        "YC_BATCHES",
+        "Winter 2025,Spring 2025,Summer 2025,Fall 2025,"
+        "Winter 2026,Spring 2026,Summer 2026,Fall 2026",
+    ).split(",")
+    if b.strip()
+]
+# Seconds between requests to ycombinator.com (be polite; the API is public).
+YC_REQUEST_DELAY: float = float(os.getenv("YC_REQUEST_DELAY", "1.2"))
+YC_REQUEST_TIMEOUT: int = int(os.getenv("YC_REQUEST_TIMEOUT", "25"))
+# Company website email lookups get a shorter timeout so one dead site cannot
+# stall the whole crawl.
+YC_WEBSITE_TIMEOUT: int = int(os.getenv("YC_WEBSITE_TIMEOUT", "12"))
+# Safety caps (0 = unlimited).
+YC_MAX_COMPANIES_PER_BATCH: int = int(os.getenv("YC_MAX_COMPANIES_PER_BATCH", "0"))
+YC_MAX_PAGES_PER_BATCH: int = int(os.getenv("YC_MAX_PAGES_PER_BATCH", "0"))
+# Email discovery on company websites (homepage + /contact + /about ...).
+YC_DISCOVER_EMAILS: bool = os.getenv("YC_DISCOVER_EMAILS", "true").lower() in {"1", "true", "yes", "on"}
+YC_MAX_WEBSITE_PAGES: int = int(os.getenv("YC_MAX_WEBSITE_PAGES", "3"))
+YC_EMAIL_PATTERN_GUESS: bool = os.getenv("YC_EMAIL_PATTERN_GUESS", "true").lower() in {"1", "true", "yes", "on"}
+# Per-company time budget for optional enrichment (website emails + founder
+# pages). When exceeded, the crawl stores what it has and moves on.
+YC_COMPANY_TIME_BUDGET: int = int(os.getenv("YC_COMPANY_TIME_BUDGET", "120"))
+
+# ─── Outreach ────────────────────────────────────────────────────────────────
+OUTREACH_ENABLED: bool = os.getenv("OUTREACH_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+OUTREACH_SENDER_NAME: str = os.getenv("OUTREACH_SENDER_NAME", "")
+OUTREACH_SENDER_COMPANY: str = os.getenv("OUTREACH_SENDER_COMPANY", "")
+OUTREACH_SENDER_LINK: str = os.getenv("OUTREACH_SENDER_LINK", "")
+OUTREACH_KEYWORDS: list[str] = [
+    k.strip()
+    for k in os.getenv("OUTREACH_KEYWORDS", "backend,python,devops,platform,ai,llm,full stack").split(",")
+    if k.strip()
+]
+OUTREACH_MAX_JOBS_IN_MESSAGE: int = int(os.getenv("OUTREACH_MAX_JOBS_IN_MESSAGE", "3"))
+OUTREACH_DEFAULT_CHANNEL: str = os.getenv("OUTREACH_DEFAULT_CHANNEL", "email")
+# Per-run send caps. Keep DM volume low to avoid platform challenges.
+OUTREACH_X_MAX_PER_RUN: int = int(os.getenv("OUTREACH_X_MAX_PER_RUN", "20"))
+OUTREACH_LINKEDIN_MAX_PER_RUN: int = int(os.getenv("OUTREACH_LINKEDIN_MAX_PER_RUN", "10"))
+OUTREACH_EMAIL_MAX_PER_RUN: int = int(os.getenv("OUTREACH_EMAIL_MAX_PER_RUN", "50"))
+# Randomized pause between DM sends (seconds) to avoid platform challenges.
+OUTREACH_DM_MIN_DELAY: int = int(os.getenv("OUTREACH_DM_MIN_DELAY", "45"))
+OUTREACH_DM_MAX_DELAY: int = int(os.getenv("OUTREACH_DM_MAX_DELAY", "120"))
+
+# SMTP (email channel)
+SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM: str = os.getenv("SMTP_FROM", "") or SMTP_USER
+SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes", "on"}
+
+# ─── Storage ─────────────────────────────────────────────────────────────────
 DATABASE_URL: str = os.getenv(
     "DATABASE_URL",
     "postgresql://job_user:job_password@postgres:5432/job_automation",
@@ -283,7 +475,7 @@ SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "jobs.db")
 DEFAULT_SEARCH_LIMIT: int = 500
 MAX_SEARCH_LIMIT: int = 1000
 DEFAULT_SEARCH_OFFSET: int = 0
-DEFAULT_RECENT_HOURS: int = 72
+DEFAULT_RECENT_HOURS: int = 24
 DEFAULT_INDEED_LIMIT: int = 50  # 0 = no limit, fetch all available within date range
 DEFAULT_MAX_PAGES: int = 0
 DEFAULT_MAX_CONCURRENT_SPIDERS: int = 2

@@ -6,8 +6,8 @@ python-dotenv==1.2.2
 pandas==2.2.3
 psycopg[binary]==3.2.9
 redis==5.2.1
-scrapling[spiders]
-scrapling[fetchers]
+# Pinned: 0.5 removed AsyncDynamicSession (used by spiders/base.py) and the
+# `spiders` extra never existed — the Spider framework is part of the core.
+scrapling[fetchers]==0.4.15
 uvloop; sys_platform != "win32"
 playwright
-chromium

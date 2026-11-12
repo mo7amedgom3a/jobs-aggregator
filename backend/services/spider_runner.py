@@ -46,7 +46,11 @@ class SpiderRunner:
                 cfg.max_pages = int(env_overrides.get("MAX_PAGES", "0"))
 
             logger.info("Executing spider '%s'", spider_name)
-            run_spider(cfg)
+            summary = run_spider(cfg)
+            if summary.get("status") == "failed":
+                raise RuntimeError(
+                    f"Spider '{spider_name}' failed: {summary.get('error', 'unknown error')}"
+                )
 
             results = [
                 self._normalize_job(row, spider_name)
@@ -56,7 +60,7 @@ class SpiderRunner:
             return results
         except Exception as exc:
             logger.error("Failed running spider '%s': %s", spider_name, exc, exc_info=True)
-            return []
+            raise
         finally:
             os.environ.clear()
             os.environ.update(old_env)
@@ -67,6 +71,13 @@ class SpiderRunner:
             scraped_at_value = scraped_at.isoformat()
         else:
             scraped_at_value = str(scraped_at or "")
+
+        posted_at = row.get("posted_at")
+        posted_at_value = (
+            posted_at.isoformat()
+            if isinstance(posted_at, datetime)
+            else (str(posted_at) if posted_at else scraped_at_value)
+        )
 
         tags = row.get("tags") or ""
         return {
@@ -80,6 +91,12 @@ class SpiderRunner:
             "salary": row.get("salary") or "",
             "source": row.get("source") or spider_name,
             "scraped_at": scraped_at_value,
-            "date_posted": scraped_at_value,
+            "posted_at": posted_at_value,
+            "date_posted": posted_at_value,
+            "score": row.get("score"),
+            "relevance": row.get("relevance"),
+            "authenticity": row.get("authenticity"),
+            "verdict": row.get("verdict"),
+            "reasons": [r for r in str(row.get("score_reasons") or "").split(" | ") if r],
             "site": "linkedin" if "linkedin" in spider_name else ("indeed" if "indeed" in spider_name else spider_name),
         }

@@ -13,7 +13,9 @@ from dork_builder import DorkQueryBuilder
 from google_api_search_engine import GoogleApiSearcher
 from models.job import JobResult, SearchRequest, SearchResponse
 from parser import JobResultParser
-from services.filters import is_blacklisted_company, is_within_24_hours
+from config.settings import POSTED_HOURS, REMOTE_ONLY, STRICT_RECENT
+from services.filters import is_blacklisted_company, is_remote_only, is_within_24_hours
+from services.scoring import score_and_annotate
 
 logger = logging.getLogger("job_aggregator.services.google_search")
 
@@ -53,6 +55,8 @@ class GoogleJobSearchService:
 
         for job in parsed:
             if is_blacklisted_company(job.get("company")):
+                continue
+            if REMOTE_ONLY and not is_remote_only(job):
                 continue
             if self.cache.is_seen(job["url"]):
                 skipped += 1
@@ -97,10 +101,13 @@ class GoogleJobSearchService:
         for job in parsed_jobs:
             if is_blacklisted_company(job.get("company")):
                 continue
+            if REMOTE_ONLY and not is_remote_only(job):
+                continue
             if self.cache.is_seen(job["url"]):
                 continue
             self.cache.mark_seen(job["url"])
-            deduped.append(job)
+            deduped.append(score_and_annotate(job, keywords=keywords))
+        deduped.sort(key=lambda job: job.get("score", 0), reverse=True)
         return deduped
 
     async def search_raw(
@@ -136,7 +143,13 @@ class GoogleJobSearchService:
             raw_results.extend(result)
 
         filtered_raw_results = [
-            item for item in raw_results if is_within_24_hours(item.get("date", ""), item.get("body", ""))
+            item
+            for item in raw_results
+            if is_within_24_hours(
+                item.get("date", ""),
+                item.get("body", ""),
+                strict=STRICT_RECENT,
+            )
         ]
         recency_skipped = len(raw_results) - len(filtered_raw_results)
         logger.info(

@@ -107,7 +107,10 @@ async def test_search_jobs_endpoint_with_filters(mocker: Any) -> None:
         company=None,
         remote=True,
         limit=DEFAULT_SEARCH_LIMIT,
-        offset=0
+        offset=0,
+        posted_hours=24,
+        min_score=None,
+        sort_by="score",
     )
 
     assert results["total"] == 1
@@ -153,7 +156,7 @@ async def test_search_jobs_endpoint_unrestricted(mocker: Any) -> None:
         2
     )
 
-    req = JobSearchRequest(keywords=["Engineer"])  # country and remote are None
+    req = JobSearchRequest(keywords=["Engineer"], remote=None)  # country and remote are None
 
     # Act
     results = await search_jobs(req=req, repository=mock_repository)
@@ -165,7 +168,10 @@ async def test_search_jobs_endpoint_unrestricted(mocker: Any) -> None:
         company=None,
         remote=None,
         limit=DEFAULT_SEARCH_LIMIT,
-        offset=0
+        offset=0,
+        posted_hours=24,
+        min_score=None,
+        sort_by="score",
     )
 
     # Both jobs should be kept because remote is None (no filtering by remote),

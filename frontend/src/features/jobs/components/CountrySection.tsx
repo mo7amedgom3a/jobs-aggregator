@@ -8,7 +8,7 @@ import indeedIcon from "@/asset/indeed.svg";
 interface Props {
   cg: CountryGroup;
   layout: "grid" | "list";
-  sort: "date" | "company";
+  sort: "score" | "date" | "company";
   flag: string;
 }
 
@@ -45,10 +45,12 @@ export function CountrySection({ cg, layout, sort, flag }: Props) {
       }
     });
 
-    if (sort === "date") {
+    if (sort === "score") {
+      list.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    } else if (sort === "date") {
       list.sort((a, b) => {
-        const da = a.scraped_at ? new Date(a.scraped_at).getTime() : 0;
-        const db = b.scraped_at ? new Date(b.scraped_at).getTime() : 0;
+        const da = a.posted_at || a.scraped_at ? new Date(a.posted_at || a.scraped_at).getTime() : 0;
+        const db = b.posted_at || b.scraped_at ? new Date(b.posted_at || b.scraped_at).getTime() : 0;
         return db - da;
       });
     } else if (sort === "company") {

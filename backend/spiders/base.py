@@ -159,14 +159,32 @@ class BaseJobSpider(Spider):
 
     async def on_scraped_item(self, item: dict) -> dict | None:
         """Persist to DB and deduplicate before adding to result list."""
-        # Restrict remote job boards to jobs posted within the last 3 days
-        if self.name in {"remoteok", "weworkremotely", "jobicy", "remotive", "himalayas", "trueup"}:
-            date_posted = item.get("date_posted")
-            from services.filters import is_within_3_days
-            if not is_within_3_days(date_posted):
-                self.logger.info("[%s] Dropping item older than 3 days: %s (posted: %s)", self.name, item.get("title"), date_posted)
-                return None
+        # Hard 24-hour window: drop anything older than POSTED_HOURS.
+        from config.settings import POSTED_HOURS, REMOTE_ONLY, STRICT_RECENT
+        from services.filters import is_remote_only, is_within_window
 
+        date_posted = item.get("date_posted") or item.get("posted_at")
+        if not is_within_window(date_posted, hours=POSTED_HOURS, strict=STRICT_RECENT):
+            self.logger.info(
+                "[%s] Dropping item outside the %dh window: %s (posted: %s)",
+                self.name,
+                POSTED_HOURS,
+                item.get("title"),
+                date_posted,
+            )
+            return None
+
+        # Remote-only policy: reject onsite/hybrid listings.
+        if REMOTE_ONLY and not is_remote_only(item):
+            self.logger.info(
+                "[%s] Dropping non-remote item: %s (location: %s)",
+                self.name,
+                item.get("title"),
+                item.get("location"),
+            )
+            return None
+
+        item["_keywords"] = list(self.site_config.keywords or [])
         was_new, fp = save_job(item, source=self.site_config.name)
         if was_new:
             self._items_new += 1

@@ -24,6 +24,11 @@ backend/
 └── usecases/                ← manual spider smoke-test scripts
 ```
 
+> [!NOTE]
+> The YC founder sourcing & outreach pipeline lives in `services/yc/`,
+> `services/outreach/`, `repository/yc.py` and `routes/yc.py`. See the
+> [YC pipeline guide](YC_PIPELINE.md).
+
 Runtime services are defined in the root `docker-compose.yml`: `job-dork-api`, `postgres`, `redis`, and `n8n`.
 
 `backend/` is the single source of truth for API routes, models, services, repositories, cache, spiders, and orchestration. Legacy packages such as `scraper_api/` must not be imported by backend code.

@@ -189,7 +189,7 @@ export function SearchForm({ value, onChange, onSubmit, loading }: Props) {
               onClick={() => onChange({ remote: true })}
               style={{ flex: 1, padding: "6px 8px", fontSize: "12px", borderRadius: "6px" }}
             >
-              Remote
+              Remote only
             </button>
             <button
               type="button"
@@ -203,8 +203,8 @@ export function SearchForm({ value, onChange, onSubmit, loading }: Props) {
         </div>
       </div>
 
-      {/* Row 3 - Limit & Advanced settings removal */}
-      <div className="jd-row">
+      {/* Row 3 - Limit, score threshold & freshness policy */}
+      <div className="jd-row cols-3">
         <div>
           <label className="jd-label">Max Results</label>
           <div className="jd-slider-row">
@@ -218,6 +218,29 @@ export function SearchForm({ value, onChange, onSubmit, loading }: Props) {
               onChange={(e) => onChange({ limit: parseInt(e.target.value, 10) })}
             />
             <span className="jd-slider-val">{value.limit}</span>
+          </div>
+        </div>
+
+        <div>
+          <label className="jd-label">Minimum score</label>
+          <div className="jd-slider-row">
+            <input
+              type="range"
+              min={0}
+              max={8}
+              step={0.5}
+              className="jd-slider"
+              value={value.minScore}
+              onChange={(e) => onChange({ minScore: parseFloat(e.target.value) })}
+            />
+            <span className="jd-slider-val">{value.minScore > 0 ? value.minScore.toFixed(1) : "any"}</span>
+          </div>
+        </div>
+
+        <div>
+          <label className="jd-label">Freshness</label>
+          <div className="jd-freshness-note">
+            <span className="dot" /> Remote only · posted in the last {value.postedHours || 24}h
           </div>
         </div>
       </div>

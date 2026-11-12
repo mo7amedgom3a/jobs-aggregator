@@ -130,6 +130,74 @@ Response shape:
 }
 ```
 
+## Fresh 24-hour feed, scoring & ranking
+
+Every job returned by `/search` is restricted to the **last 24 hours** and
+scored on two dimensions. Results are also **remote-only by default**:
+listings that mention `hybrid`, `on-site`, `in-office`, `office-based`,
+`in person`, or `relocation` are rejected even if they also mention "remote".
+Set `REMOTE_ONLY=false` in `backend/.env` or pass `"remote": false` to opt out.
+
+| Field | Meaning |
+| --- | --- |
+| `score` | Composite ranking score (0–10) = 60% relevance + 40% authenticity |
+| `relevance` | Keyword match in title/description/tags + recency + salary/description quality |
+| `authenticity` | "Is this job real?" score — penalises scam phrasing, link shorteners, placeholder companies, missing descriptions |
+| `verdict` | `legit`, `suspicious`, or `likely_scam` |
+| `reasons` | Human-readable explanation of the score |
+
+`/search` accepts `sort` (`score` or `recent`), `min_score` (0–10), and
+`posted_hours` (default and recommended value: `24`). Scores are computed at
+ingestion time and stored in PostgreSQL, so ranking survives restarts; legacy
+rows are backfilled automatically on startup.
+
+## Hiring posts from LinkedIn & X
+
+The **Hiring Posts** page (and `POST /search/social/run`) scans public posts
+containing phrases like "we are hiring", "hiring now", "looking to hire",
+"send your CV", etc., keeps only posts from the last 24 hours **that advertise
+remote roles** (hybrid/onsite posts are filtered out), and applies the same
+relevance + authenticity scoring.
+
+This is deliberately **manual** — run it from the frontend 2–3 times per day,
+never on the hourly scheduler, so the LinkedIn/X accounts are not rate-limited.
+
+1. Put the credentials in `auth-access.txt` at the repo root (git-ignored) or in
+   `backend/.env`:
+   ```text
+   linkedin
+   email
+   you@example.com
+   password
+   your-password
+
+   x
+   username
+   your-handle-or-email
+   password
+   your-password
+   ```
+2. `SOCIAL_HEADLESS=false` (the default) opens a browser window on the first
+   run. The login form is filled automatically from these credentials; if
+   LinkedIn/X ask for a challenge/2FA, complete it once in that window. The
+   persistent profile is stored in `backend/.sessions/` and reused afterwards,
+   so later scans skip the login entirely. X's new two-step login
+   (username → password) is handled automatically.
+3. From the UI: **Hiring Posts → Scan hiring posts now**. Results appear ranked
+   once the background scan finishes.
+
+Endpoints:
+
+```text
+POST /search/social/run      # start a manual scan (background)
+GET  /search/social          # ranked posts (24h, filters: platform, min_score, keywords)
+GET  /search/social/status   # credential/session availability + last scan result
+```
+
+> **Security:** `auth-access.txt` and `backend/.sessions/` are git-ignored. Do
+> not commit them. Automated access to logged-in LinkedIn/X accounts is against
+> their terms of service — use your own account and keep volume low.
+
 ## Use Cases
 
 ### Country and Region Targeting
