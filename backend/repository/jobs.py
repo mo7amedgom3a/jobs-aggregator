@@ -380,6 +380,18 @@ class JobRepository:
                 "us": ["usa", "united states", "us", "new york", "san francisco", "california"],
                 "united kingdom": ["uk", "united kingdom", "london", "england"],
                 "uk": ["uk", "united kingdom", "london", "england"],
+                "qatar": ["qatar", "doha", "قطر"],
+                "qa": ["qatar", "doha", "قطر"],
+                "kuwait": ["kuwait", "kuwait city", "الكويت"],
+                "kw": ["kuwait", "kuwait city", "الكويت"],
+                "bahrain": ["bahrain", "manama", "البحرين"],
+                "bh": ["bahrain", "manama", "البحرين"],
+                "oman": ["oman", "muscat", "عمان"],
+                "om": ["oman", "muscat", "عمان"],
+                "jordan": ["jordan", "amman", "الأردن"],
+                "jo": ["jordan", "amman", "الأردن"],
+                "middle east": ["middle east", "mena", "gcc", "gulf", "saudi", "uae", "emirates", "egypt", "qatar", "kuwait", "bahrain", "oman", "jordan"],
+                "mena": ["middle east", "mena", "gcc", "gulf", "saudi", "uae", "emirates", "egypt", "qatar", "kuwait", "bahrain", "oman", "jordan"],
             }
             country_clauses = []
             for c in countries:
@@ -615,8 +627,25 @@ class JobRepository:
                 "telecommute",
                 "remote-first",
                 "home-based",
+                # Arabic remote phrasing (including underscore hashtags)
+                "عن بعد",
+                "عن_بعد",
+                "من المنزل",
+                "من_المنزل",
+                "ريموت",
             ]
-            onsite_terms = ["hybrid", "on-site", "onsite", "in-office", "office-based", "in person"]
+            onsite_terms = [
+                "hybrid",
+                "on-site",
+                "onsite",
+                "in-office",
+                "office-based",
+                "in person",
+                # Arabic onsite/hybrid phrasing
+                "حضوري",
+                "هجين",
+                "من المكتب",
+            ]
             positive = []
             for term in remote_terms:
                 positive.append("text ILIKE %s")

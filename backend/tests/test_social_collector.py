@@ -59,7 +59,7 @@ def test_collector_filters_hiring_intent_and_recency(monkeypatch) -> None:
     monkeypatch.setitem(
         collector.COLLECTORS,
         "linkedin",
-        lambda keywords, max_posts=None, location=None: [
+        lambda keywords, max_posts=None, location=None, countries=None: [
             fresh_hiring,
             stale_hiring,
             not_hiring,
@@ -68,7 +68,7 @@ def test_collector_filters_hiring_intent_and_recency(monkeypatch) -> None:
         ],
     )
 
-    summary = collector.collect_social_posts(keywords=["backend"], platforms=["linkedin"])
+    summary = collector.collect_social_posts(keywords=["backend"], platforms=["linkedin"], strict_region=False)
 
     assert summary["saved"] == 1
     assert summary["platforms"]["linkedin"]["fetched"] == 5
@@ -86,12 +86,12 @@ def test_collector_reports_platform_errors(monkeypatch) -> None:
     fake_repo = FakeRepository()
     monkeypatch.setattr(collector, "JobRepository", lambda: fake_repo)
 
-    def boom(keywords, max_posts=None, location=None):
+    def boom(keywords, max_posts=None, location=None, countries=None):
         raise RuntimeError("login required")
 
     monkeypatch.setitem(collector.COLLECTORS, "linkedin", boom)
 
-    summary = collector.collect_social_posts(keywords=["python"], platforms=["linkedin"])
+    summary = collector.collect_social_posts(keywords=["python"], platforms=["linkedin"], strict_region=False)
 
     assert "linkedin" in summary["errors"]
     assert "login required" in summary["errors"]["linkedin"]
@@ -120,10 +120,10 @@ def test_collector_skips_non_tech_hiring_posts(monkeypatch) -> None:
     monkeypatch.setitem(
         collector.COLLECTORS,
         "x",
-        lambda keywords, max_posts=None: [sales_post, manager_post],
+        lambda keywords, max_posts=None, countries=None: [sales_post, manager_post],
     )
 
-    summary = collector.collect_social_posts(keywords=["engineer"], platforms=["x"])
+    summary = collector.collect_social_posts(keywords=["engineer"], platforms=["x"], strict_region=False)
 
     assert summary["saved"] == 0
     assert summary["platforms"]["x"]["skipped"] == 2
@@ -134,6 +134,46 @@ def test_x_query_builder_includes_remote_and_recency() -> None:
 
     queries = build_x_queries(["devops", "backend"])
     assert queries
-    assert all("remote" in query.lower() for query in queries)
+    assert any("remote" in query.lower() for query in queries)
     assert all("since:" in query for query in queries)
     assert any("devops" in query.lower() for query in queries)
+
+
+def test_collector_filters_posts_by_selected_region(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    fake_repo = FakeRepository()
+    monkeypatch.setattr(collector, "JobRepository", lambda: fake_repo)
+
+    egypt_post = {
+        "platform": "linkedin",
+        "author": "Cairo Recruiter",
+        "text": "We are hiring a DevOps Engineer. Fully remote, Egypt only.",
+        "post_url": "https://linkedin.com/posts/eg-1",
+        "posted_at": (now - timedelta(hours=1)).isoformat(),
+    }
+    global_post = {
+        "platform": "linkedin",
+        "author": "Global Recruiter",
+        "text": "We are hiring a DevOps Engineer. Fully remote worldwide.",
+        "post_url": "https://linkedin.com/posts/global-1",
+        "posted_at": (now - timedelta(hours=1)).isoformat(),
+    }
+    monkeypatch.setitem(
+        collector.COLLECTORS,
+        "linkedin",
+        lambda keywords, max_posts=None, location=None, countries=None: [
+            egypt_post,
+            global_post,
+        ],
+    )
+
+    summary = collector.collect_social_posts(
+        keywords=["devops"],
+        platforms=["linkedin"],
+        countries=["egypt"],
+        strict_region=True,
+    )
+
+    assert summary["saved"] == 1
+    assert fake_repo.saved[0]["post_url"] == "https://linkedin.com/posts/eg-1"
+    assert summary["countries"] == ["egypt"]

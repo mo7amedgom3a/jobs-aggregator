@@ -2,6 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { JobDorkApp } from "@/features/jobs/JobDorkApp";
 
 export const Route = createFileRoute("/")({
+  validateSearch: (search: Record<string, unknown>): { remote?: string } => ({
+    remote: typeof search.remote === "string" ? search.remote : undefined,
+  }),
   head: () => ({
     meta: [
       { title: "JobDork — Multi-source job search" },

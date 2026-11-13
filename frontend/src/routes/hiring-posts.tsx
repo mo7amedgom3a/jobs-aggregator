@@ -2,21 +2,35 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TopNav } from "@/features/jobs/components/TopNav";
 import { HiringPostCard } from "@/features/jobs/components/HiringPostCard";
-import { getHiringPosts, getSocialStatus, runSocialScan } from "@/features/jobs/api";
+import { getHiringPosts, getSocialStatus, openSocialSession, runSocialScan } from "@/features/jobs/api";
 import type { HiringPost, SocialStatusResponse } from "@/features/jobs/types";
 import "@/features/jobs/jobdork.css";
 
 export const Route = createFileRoute("/hiring-posts")({
   head: () => ({
     meta: [
-      { title: "Hiring Posts — LinkedIn & X" },
-      { name: "description", content: "Scan LinkedIn and X for fresh hiring posts from the last 24 hours." },
+      { title: "Hiring Posts — LinkedIn, X & Reddit" },
+      { name: "description", content: "Scan LinkedIn, X and Reddit for fresh remote hiring posts from the last 24 hours." },
     ],
   }),
   component: HiringPostsPage,
 });
 
-const DEFAULT_PLATFORMS = ["linkedin", "x"];
+const DEFAULT_PLATFORMS = ["linkedin", "x", "reddit"];
+
+const MENA_COUNTRIES: Array<{ id: string; label: string; flag: string }> = [
+  { id: "egypt", label: "Egypt", flag: "🇪🇬" },
+  { id: "saudi arabia", label: "Saudi Arabia", flag: "🇸🇦" },
+  { id: "united arab emirates", label: "UAE", flag: "🇦🇪" },
+  { id: "qatar", label: "Qatar", flag: "🇶🇦" },
+  { id: "kuwait", label: "Kuwait", flag: "🇰🇼" },
+  { id: "bahrain", label: "Bahrain", flag: "🇧🇭" },
+  { id: "oman", label: "Oman", flag: "🇴🇲" },
+  { id: "jordan", label: "Jordan", flag: "🇯🇴" },
+  { id: "middle east", label: "Middle East / MENA", flag: "🌍" },
+];
+
+const DEFAULT_COUNTRIES = MENA_COUNTRIES.filter((c) => c.id !== "middle east").map((c) => c.id);
 
 function HiringPostsPage() {
   const [status, setStatus] = useState<SocialStatusResponse | null>(null);
@@ -24,6 +38,8 @@ function HiringPostsPage() {
   const [total, setTotal] = useState(0);
   const [keywordsInput, setKeywordsInput] = useState("devops, backend, python, frontend");
   const [platforms, setPlatforms] = useState<string[]>(DEFAULT_PLATFORMS);
+  const [countries, setCountries] = useState<string[]>(DEFAULT_COUNTRIES);
+  const [strictRegion, setStrictRegion] = useState(false);
   const [maxPosts, setMaxPosts] = useState(40);
   const [filterPlatform, setFilterPlatform] = useState("all");
   const [minScore, setMinScore] = useState(0);
@@ -32,6 +48,7 @@ function HiringPostsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  const sessionPollRef = useRef<number | null>(null);
 
   const keywords = keywordsInput
     .split(",")
@@ -73,6 +90,7 @@ function HiringPostsPage() {
     loadPosts();
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
+      if (sessionPollRef.current) window.clearInterval(sessionPollRef.current);
     };
   }, []);
 
@@ -100,10 +118,60 @@ function HiringPostsPage() {
     }, 5000);
   };
 
+  const stopSessionPolling = () => {
+    if (sessionPollRef.current) {
+      window.clearInterval(sessionPollRef.current);
+      sessionPollRef.current = null;
+    }
+  };
+
+  const startSessionPolling = () => {
+    stopSessionPolling();
+    sessionPollRef.current = window.setInterval(async () => {
+      const data = await loadStatus();
+      const sessions = data?.sessions ? Object.values(data.sessions) : [];
+      const stillOpen = sessions.some((session) => session.running);
+      if (!stillOpen) {
+        stopSessionPolling();
+        const failed = sessions.find((session) => session.error);
+        const timedOut = sessions.find((session) => session.timed_out);
+        if (failed?.error) {
+          setError(`The login browser failed: ${failed.error}`);
+        } else if (timedOut) {
+          setMessage(
+            "Login window closed after the timeout. Re-open it if you still need to sign in."
+          );
+        } else {
+          setMessage(
+            "Browser closed. The session was saved — you can run a scan again."
+          );
+        }
+      }
+    }, 3000);
+  };
+
+  const handleOpenBrowser = async (platform: string) => {
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await openSocialSession(platform);
+      setMessage(res.message);
+      if (res.status === "error") {
+        setError(res.message);
+        return;
+      }
+      startSessionPolling();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to open the login browser"
+      );
+    }
+  };
+
   const handleScan = async () => {
     if (scanning) return;
     const ok = confirm(
-      "This logs into LinkedIn/X with your saved session and scans public hiring posts from the last 24 hours.\n\n" +
+      "This logs into LinkedIn/X with your saved session and reads public Reddit feeds, then scans hiring posts from the last 24 hours.\n\n" +
         "Run this only 2-3 times per day to avoid rate limits. Continue?"
     );
     if (!ok) return;
@@ -115,7 +183,9 @@ function HiringPostsPage() {
       const res = await runSocialScan({
         keywords,
         platforms,
+        countries,
         max_posts: maxPosts,
+        strict_region: strictRegion,
       });
       setMessage(res.message);
       if (res.status === "error") {
@@ -140,8 +210,20 @@ function HiringPostsPage() {
     );
   };
 
+  const toggleCountry = (country: string) => {
+    setCountries((prev) =>
+      prev.includes(country) ? prev.filter((c) => c !== country) : [...prev, country]
+    );
+  };
+
   const platformState = (name: string) => status?.platforms?.[name];
+  const sessionState = (name: string) => status?.sessions?.[name];
+  const anyBrowserOpen = Boolean(
+    status?.sessions && Object.values(status.sessions).some((session) => session.running)
+  );
   const running = scanning || Boolean(status?.state?.running);
+  const platformLabel = (platform: string) =>
+    platform === "x" ? "X (Twitter)" : platform === "reddit" ? "Reddit" : "LinkedIn";
 
   return (
     <div className="jobdork">
@@ -150,7 +232,7 @@ function HiringPostsPage() {
 
       <div className="jd-aggregation-page">
         <div className="jd-page-header">
-          <h1>Hiring posts — LinkedIn &amp; X</h1>
+          <h1>Hiring posts — LinkedIn, X &amp; Reddit</h1>
           <p>
             Scans public “we are hiring” posts from the last 24 hours, keeps only
             remote roles (hybrid/onsite are excluded), and ranks them by relevance and
@@ -188,7 +270,10 @@ function HiringPostsPage() {
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 {DEFAULT_PLATFORMS.map((platform) => {
                   const info = platformState(platform);
-                  const available = Boolean(info?.credentials || info?.saved_session);
+                  const session = sessionState(platform);
+                  const available = Boolean(
+                    info?.credentials || info?.saved_session || info?.public_feed
+                  );
                   return (
                     <label key={platform} className="jd-hp-platform-toggle">
                       <input
@@ -196,18 +281,72 @@ function HiringPostsPage() {
                         checked={platforms.includes(platform)}
                         onChange={() => togglePlatform(platform)}
                       />
-                      <span>{platform === "x" ? "X (Twitter)" : "LinkedIn"}</span>
+                      <span>{platformLabel(platform)}</span>
                       <span className={`jd-hp-availability ${available ? "ok" : "missing"}`}>
-                        {available ? "configured" : "no session"}
+                        {session?.running ? "browser open" : available ? "configured" : "no session"}
                       </span>
                     </label>
                   );
                 })}
               </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                {DEFAULT_PLATFORMS.map((platform) => {
+                  const session = sessionState(platform);
+                  return (
+                    <button
+                      key={platform}
+                      type="button"
+                      className="jd-btn ghost"
+                      style={{ fontSize: 12, padding: "8px 12px" }}
+                      onClick={() => handleOpenBrowser(platform)}
+                      disabled={running || Boolean(session?.running)}
+                      title="Opens a visible browser with the saved profile so you can re-login or complete a security check."
+                    >
+                      {session?.running
+                        ? `${platformLabel(platform)}: browser open`
+                        : `Open ${platformLabel(platform)} login`}
+                    </button>
+                  );
+                })}
+              </div>
               <p className="mono" style={{ color: "var(--jd-muted-2)", fontSize: 11, marginTop: 8 }}>
-                Credentials are read from <code>auth-access.txt</code> / <code>backend/.env</code>.
-                The first run opens a browser window so you can complete any login challenge.
+                Use these if a platform signed you out or asked for a security check. Log in
+                in the window, then close it — the saved session is reused by the next scan.
               </p>
+              <p className="mono" style={{ color: "var(--jd-muted-2)", fontSize: 11, marginTop: 8 }}>
+                LinkedIn/X use saved sessions; Reddit reads public feeds. Credentials come from{" "}
+                <code>auth-access.txt</code> / <code>backend/.env</code>.
+              </p>
+            </div>
+
+            <div className="jd-form-group">
+              <label>Countries / region</label>
+              <div className="jd-hp-country-grid">
+                {MENA_COUNTRIES.map((country) => (
+                  <label key={country.id} className="jd-hp-platform-toggle">
+                    <input
+                      type="checkbox"
+                      checked={countries.includes(country.id)}
+                      onChange={() => toggleCountry(country.id)}
+                    />
+                    <span>
+                      {country.flag} {country.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="mono" style={{ color: "var(--jd-muted-2)", fontSize: 11, marginTop: 8 }}>
+                Selected countries are added to every LinkedIn/X query (e.g. Egypt, Cairo,
+                Saudi Arabia, Riyadh, UAE, Dubai, Qatar, Doha, MENA).
+              </p>
+              <label className="jd-hp-platform-toggle" style={{ marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={strictRegion}
+                  onChange={(e) => setStrictRegion(e.target.checked)}
+                />
+                <span>Only posts mentioning the selected region</span>
+              </label>
             </div>
 
             <div className="jd-form-group">
@@ -227,9 +366,13 @@ function HiringPostsPage() {
               className="jd-btn primary"
               style={{ width: "100%", justifyContent: "center", padding: 14, marginTop: 12 }}
               onClick={handleScan}
-              disabled={running || platforms.length === 0}
+              disabled={running || anyBrowserOpen || platforms.length === 0 || countries.length === 0}
             >
-              {running ? "Scanning posts…" : "Scan hiring posts now"}
+              {running
+                ? "Scanning posts…"
+                : anyBrowserOpen
+                  ? "Close the login window to scan"
+                  : "Scan hiring posts now"}
             </button>
 
             {status?.state?.last_result && (
@@ -251,6 +394,7 @@ function HiringPostsPage() {
                 <option value="all">All platforms</option>
                 <option value="linkedin">LinkedIn</option>
                 <option value="x">X (Twitter)</option>
+                <option value="reddit">Reddit</option>
               </select>
             </div>
 

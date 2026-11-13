@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { TopNav } from "@/features/jobs/components/TopNav";
 import { getCountries, postSubAggregate } from "@/features/jobs/api";
@@ -16,6 +16,7 @@ const COUNTRY_FLAGS: Record<string, string> = {
   kuwait: "🇰🇼",
   bahrain: "🇧🇭",
   oman: "🇴🇲",
+  jordan: "🇯🇴",
   uk: "🇬🇧",
   "united kingdom": "🇬🇧",
   germany: "🇩🇪",
@@ -127,7 +128,13 @@ function ControlPage() {
       setHistory((prev) =>
         prev.map((item) =>
           item.id === historyId
-            ? { ...item, status: "success", message: response.message || "Scraper triggered successfully." }
+            ? {
+                ...item,
+                status: "success",
+                message:
+                  (response.message || "Scraper triggered successfully.") +
+                  " Results appear in Job Search once the background scrape finishes.",
+              }
             : item
         )
       );
@@ -159,6 +166,20 @@ function ControlPage() {
           <h1>Scraper Control Panel</h1>
           <p>
             Manually run individual spiders for specific countries to ingest job data into the database.
+          </p>
+          <p style={{ marginTop: 10 }}>
+            <Link
+              to="/"
+              search={{ remote: "any" }}
+              className="jd-btn primary"
+              style={{ textDecoration: "none" }}
+            >
+              View scraped jobs →
+            </Link>
+          </p>
+          <p className="mono" style={{ color: "var(--jd-muted)", fontSize: 11, marginTop: 8 }}>
+            Control-panel scrapes keep onsite, hybrid, and any-location jobs. Job Search opens
+            with Location type “Any” so they are visible.
           </p>
         </div>
 

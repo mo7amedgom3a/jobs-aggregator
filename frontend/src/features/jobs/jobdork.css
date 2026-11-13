@@ -1193,3 +1193,10 @@
   padding: 10px;
 }
 .jd-platform.x { color: #e7e9ea; border-color: rgba(231, 233, 234, .3); }
+.jd-platform.reddit { color: #ff4500; border-color: rgba(255, 69, 0, .4); }
+
+.jd-hp-country-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}

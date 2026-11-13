@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { FormState } from "../types";
 
-const COUNTRIES = ["USA", "Egypt", "Saudi Arabia", "UAE", "Qatar", "Kuwait", "Bahrain", "Oman", "UK", "Germany", "Canada"];
+const COUNTRIES = ["Egypt", "Saudi Arabia", "UAE", "Qatar", "Kuwait", "Bahrain", "Oman", "Jordan", "Middle East", "USA", "UK", "Germany", "Canada"];
 
 const SUGGESTED_KEYWORDS = [
   "backend engineer",

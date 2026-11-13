@@ -429,6 +429,10 @@ class TrueUpSpider(BaseJobSpider):
 class LinkedInSpider(BaseJobSpider):
     site_config = _cfg("linkedin")
 
+    # LinkedIn is queried with f_WT=2 (remote) and f_TPR=r86400 (last 24h).
+    source_remote_filter = True
+    source_recent_filter = True
+
     async def start_requests(self) -> AsyncGenerator[Request, None]:
         import os
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -513,11 +517,23 @@ class LinkedInSpider(BaseJobSpider):
                 salary = salary_el.css("::text").get("").strip()
             salary = " ".join(salary.split())
 
-            # Construct tags including listdate if present
+            # Construct tags including listdate if present. Prefer the visible
+            # relative text ("3 hours ago", Arabic "قبل ٧ ساعة") over the
+            # date-only datetime attribute, which loses the time of day.
             tags = []
-            listdate = card.css("time::attr(datetime)").get("").strip()
-            if not listdate:
-                listdate = card.css("time::text").get("").strip()
+            time_el = card.css("time").first
+            listdate = ""
+            if time_el:
+                time_text = " ".join(time_el.css("::text").getall()).strip()
+                datetime_attr = (time_el.attrib.get("datetime") or "").strip()
+                import re
+
+                if time_text and re.search(
+                    r"\b(ago|today|yesterday|just now)\b|قبل|منذ", time_text, re.IGNORECASE
+                ):
+                    listdate = time_text
+                else:
+                    listdate = datetime_attr or time_text
             if listdate:
                 tags.append(f"Posted {listdate}")
 
@@ -536,8 +552,33 @@ class LinkedInSpider(BaseJobSpider):
 # 8.  Indeed
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _with_fromage(url: str, days: int) -> str:
+    """Return ``url`` with Indeed's ``fromage`` (posting age) set to ``days``."""
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(url)
+    params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+    params["fromage"] = str(days)
+    # ``vjk`` pins the response to a previously opened job; drop it on retry.
+    params.pop("vjk", None)
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(params, safe="%"),
+            parsed.fragment,
+        )
+    )
+
+
 class IndeedSpider(BaseJobSpider):
     site_config = _cfg("indeed")
+
+    # Indeed is queried with fromage=1, but its new SPA does not expose a
+    # posting date on cards, so missing dates are trusted.
+    source_recent_filter = True
 
     async def start_requests(self) -> AsyncGenerator[Request, None]:
         import os
@@ -559,8 +600,9 @@ class IndeedSpider(BaseJobSpider):
         location = os.getenv("INDEED_LOCATION", params.get("l", [""])[0])
         fromage = os.getenv("INDEED_FROMAGE", params.get("fromage", ["3"])[0])
         limit = os.getenv("INDEED_LIMIT", params.get("limit", [""])[0])
-        # DSQF7 is Indeed's "Remote" attribute filter.
-        remote_filter = os.getenv("INDEED_SC", params.get("sc", ["0kf:attr(DSQF7);"])[0])
+        # Indeed's old DSQF7 remote attribute now returns "No Result", so the
+        # default is no attribute filter (remote intent is checked on the text).
+        remote_filter = os.getenv("INDEED_SC", params.get("sc", [""])[0])
 
         query_dict = {
             "q": query,
@@ -595,6 +637,41 @@ class IndeedSpider(BaseJobSpider):
         cfg = self.site_config
         kwargs = cfg.extra_fetch_kwargs or {}
         yield Request(url, callback=self.parse, sid=sid, **kwargs)
+
+    async def parse(self, response: Response):
+        """Page parse + a 48h fallback when the 24h pass yields nothing.
+
+        Retrying inside the same spider run reuses the already-solved
+        Cloudflare browser session, so the fallback costs seconds instead of
+        relaunching the whole stealth browser.
+        """
+        before = self._items_new + self._items_dupe
+        async for result in super().parse(response):
+            yield result
+
+        if getattr(self, "_expanded_retry_done", False):
+            return
+        if self.site_config.max_pages not in (0, 1):
+            return
+        if self._items_new + self._items_dupe > before:
+            return
+        if "fromage=1" not in response.url:
+            return
+
+        self._expanded_retry_done = True
+        retry_url = _with_fromage(response.url, 2)
+        self.logger.info(
+            "[%s] 24h search returned no usable jobs — retrying with a 48h "
+            "window: %s",
+            self.name,
+            retry_url,
+        )
+        yield Request(
+            retry_url,
+            callback=self.parse,
+            sid=self._default_sid(),
+            **(self.site_config.extra_fetch_kwargs or {}),
+        )
 
     async def extract_jobs(self, response: Response) -> AsyncGenerator[dict, None]:
         # Parse the domain dynamically from the site config start URLs
@@ -715,6 +792,21 @@ class LinkedInSpainSpider(LinkedInSpider):
 class LinkedInCanadaSpider(LinkedInSpider):
     site_config = _cfg("linkedin_canada")
 
+class LinkedInQatarSpider(LinkedInSpider):
+    site_config = _cfg("linkedin_qatar")
+
+class LinkedInKuwaitSpider(LinkedInSpider):
+    site_config = _cfg("linkedin_kuwait")
+
+class LinkedInBahrainSpider(LinkedInSpider):
+    site_config = _cfg("linkedin_bahrain")
+
+class LinkedInOmanSpider(LinkedInSpider):
+    site_config = _cfg("linkedin_oman")
+
+class LinkedInJordanSpider(LinkedInSpider):
+    site_config = _cfg("linkedin_jordan")
+
 class IndeedEGSpider(IndeedSpider):
     site_config = _cfg("indeed_eg")
 
@@ -729,6 +821,24 @@ class IndeedUKSpider(IndeedSpider):
 
 class IndeedGermanySpider(IndeedSpider):
     site_config = _cfg("indeed_germany")
+
+class IndeedQatarSpider(IndeedSpider):
+    site_config = _cfg("indeed_qa")
+
+class IndeedKuwaitSpider(IndeedSpider):
+    site_config = _cfg("indeed_kw")
+
+class IndeedBahrainSpider(IndeedSpider):
+    site_config = _cfg("indeed_bh")
+
+class IndeedOmanSpider(IndeedSpider):
+    site_config = _cfg("indeed_om")
+
+class IndeedJordanSpider(IndeedSpider):
+    site_config = _cfg("indeed_jo")
+
+class IndeedRemoteSpider(IndeedSpider):
+    site_config = _cfg("indeed_remote")
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────────
@@ -752,11 +862,22 @@ ALL_SPIDERS: dict[str, type[BaseJobSpider]] = {
     "linkedin_poland":  LinkedInPolandSpider,
     "linkedin_spain":   LinkedInSpainSpider,
     "linkedin_canada":  LinkedInCanadaSpider,
+    "linkedin_qatar":   LinkedInQatarSpider,
+    "linkedin_kuwait":  LinkedInKuwaitSpider,
+    "linkedin_bahrain": LinkedInBahrainSpider,
+    "linkedin_oman":    LinkedInOmanSpider,
+    "linkedin_jordan":  LinkedInJordanSpider,
     "indeed_eg":        IndeedEGSpider,
     "indeed_sa":        IndeedSASpider,
     "indeed_ae":        IndeedAESpider,
     "indeed_uk":        IndeedUKSpider,
     "indeed_germany":   IndeedGermanySpider,
+    "indeed_qa":        IndeedQatarSpider,
+    "indeed_kw":        IndeedKuwaitSpider,
+    "indeed_bh":        IndeedBahrainSpider,
+    "indeed_om":        IndeedOmanSpider,
+    "indeed_jo":        IndeedJordanSpider,
+    "indeed_remote":    IndeedRemoteSpider,
 }
 
 

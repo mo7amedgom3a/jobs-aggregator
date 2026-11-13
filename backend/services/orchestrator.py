@@ -10,7 +10,14 @@ from models.job import SearchRequest
 from services.filters import is_blacklisted_company
 from services.google_search import GoogleJobSearchService
 from services.spider_runner import SpiderRunner
-from config.settings import SITES, KEYWORDS, DEFAULT_MAX_CONCURRENT_SPIDERS, DEFAULT_INDEED_LIMIT, DEFAULT_MAX_PAGES
+from config.settings import (
+    SITES,
+    KEYWORDS,
+    INDEED_KEYWORDS,
+    DEFAULT_MAX_CONCURRENT_SPIDERS,
+    DEFAULT_INDEED_LIMIT,
+    DEFAULT_MAX_PAGES,
+)
 
 logger = logging.getLogger("job_aggregator.services.orchestrator")
 
@@ -44,7 +51,13 @@ class JobOrchestrator:
         primary_country = req.countries[0].title() if req.countries else "Egypt"
 
         base_env_overrides = self._build_env_overrides(req, keywords)
-        spiders_to_run = self._select_spiders(is_remote, primary_country, location, base_env_overrides)
+        spiders_to_run = self._select_spiders(
+            is_remote,
+            primary_country,
+            location,
+            base_env_overrides,
+            countries=req.countries,
+        )
         logger.info("Determined spiders to execute: %s", spiders_to_run)
 
         semaphore = asyncio.Semaphore(self.max_concurrent_spiders)
@@ -123,18 +136,68 @@ class JobOrchestrator:
 
     def _build_env_overrides(self, req: SearchRequest, keywords: list[str]) -> dict[str, str]:
         search_term = " OR ".join([f'"{keyword}"' if " " in keyword else keyword for keyword in keywords])
+        # Indeed's broad OR matching turns bare terms like "Engineer" into
+        # civil/mechanical/teaching results, so use the focused tech list unless
+        # the caller supplied explicit keywords. Quoted phrases and long OR
+        # chains (10+ terms) return an empty page on Indeed, so keep the query
+        # unquoted and capped at 4 terms.
+        indeed_keywords = keywords if keywords != KEYWORDS else INDEED_KEYWORDS
+        indeed_keywords = [str(kw).strip() for kw in indeed_keywords if str(kw).strip()][:4]
+        indeed_search_term = " OR ".join(indeed_keywords)
         return {
             "LINKEDIN_KEYWORDS": search_term,
             # Always restrict LinkedIn to the last 24 hours and remote jobs.
             "LINKEDIN_TPR": "r86400",
             "LINKEDIN_F_WT": "2",
-            "INDEED_QUERY": search_term,
-            # Indeed: 1 = last 24 hours, DSQF7 = Remote attribute.
+            "INDEED_QUERY": indeed_search_term,
+            # Indeed: 1 = last 24 hours. The old DSQF7 remote attribute now
+            # returns "No Result" on every country board, so remote intent is
+            # enforced by the shared text filter instead.
             "INDEED_FROMAGE": "1",
-            "INDEED_SC": "0kf:attr(DSQF7);",
+            "INDEED_SC": "",
             "INDEED_LIMIT": str(DEFAULT_INDEED_LIMIT),
             "MAX_PAGES": str(DEFAULT_MAX_PAGES),
         }
+
+    def _country_spiders(self, country_input: str, location: str) -> list[str]:
+        """Return the regional LinkedIn/Indeed spiders for one country."""
+        country = (country_input or "").lower().strip()
+        location_lower = (location or "").lower()
+
+        if "egypt" in country or "cairo" in location_lower or country in {"eg", "مصر"}:
+            return ["linkedin_eg", "indeed_eg"]
+        if "saudi" in country or country in {"sa", "ksa", "السعودية"}:
+            return ["linkedin_sa", "indeed_sa"]
+        if "emirates" in country or country in {"ae", "uae", "dubai", "الإمارات"}:
+            return ["linkedin_ae", "indeed_ae"]
+        if "germany" in country or country == "de":
+            return ["linkedin_germany", "indeed_germany"]
+        if "united kingdom" in country or country in {"uk", "gb"} or "london" in location_lower:
+            return ["linkedin_uk", "indeed_uk"]
+        if "poland" in country or country == "pl":
+            return ["linkedin_poland"]
+        if "spain" in country or "barcelona" in location_lower or country == "es":
+            return ["linkedin_spain", "linkedin_barcelona"]
+        if "canada" in country or country == "ca":
+            return ["linkedin_canada"]
+        if "qatar" in country or "doha" in location_lower or country in {"qa", "قطر"}:
+            return ["linkedin_qatar", "indeed_qa"]
+        if "kuwait" in country or country in {"kw", "الكويت"}:
+            return ["linkedin_kuwait", "indeed_kw"]
+        if "bahrain" in country or country in {"bh", "البحرين"}:
+            return ["linkedin_bahrain", "indeed_bh"]
+        if "oman" in country or "muscat" in location_lower or country in {"om", "عمان"}:
+            return ["linkedin_oman", "indeed_om"]
+        if "jordan" in country or "amman" in location_lower or country in {"jo", "الأردن"}:
+            return ["linkedin_jordan", "indeed_jo"]
+        if any(token in country for token in ("middle east", "mena", "gulf", "gcc", "arab")):
+            return [
+                "linkedin_sa", "linkedin_ae", "linkedin_eg", "linkedin_qatar",
+                "linkedin_kuwait", "linkedin_bahrain", "linkedin_oman", "linkedin_jordan",
+                "indeed_sa", "indeed_ae", "indeed_eg", "indeed_qa",
+                "indeed_kw", "indeed_bh", "indeed_om", "indeed_jo",
+            ]
+        return []
 
     def _select_spiders(
         self,
@@ -142,42 +205,37 @@ class JobOrchestrator:
         primary_country: str,
         location: str,
         env_overrides: dict[str, str],
+        countries: list[str] | None = None,
     ) -> list[str]:
-        # Filter sites that are enabled in settings config
         enabled_names = {site.name for site in SITES if site.enabled}
+        global_remote_boards = {
+            "remoteok", "weworkremotely", "jobicy", "remotive", "himalayas", "trueup",
+            "indeed_remote",
+        }
 
         if is_remote:
-            # For remote searches, run all enabled general/regional version spiders,
-            # but exclude the base 'linkedin' and 'indeed' configuration objects
-            # as we run country-specific versions instead
-            return [
-                name for name in enabled_names
-                if name not in {"linkedin", "indeed"}
+            # Run global remote boards + only the region-specific spiders for the
+            # requested countries (instead of every regional spider).
+            selected: list[str] = [
+                name for name in global_remote_boards if name in enabled_names
             ]
+            for country in (countries or [primary_country]):
+                selected.extend(self._country_spiders(country, location))
 
-        country = primary_country.lower().strip()
-        location_lower = location.lower()
-        selected = []
+            if not any("linkedin" in name or "indeed" in name for name in selected):
+                selected.extend(name for name in enabled_names if name not in global_remote_boards)
 
-        if "egypt" in country or "cairo" in location_lower:
-            selected = ["linkedin_eg", "indeed_eg"]
-        elif "saudi" in country:
-            selected = ["linkedin_sa", "indeed_sa"]
-        elif "emirates" in country or "ae" in country or "uae" in country:
-            selected = ["linkedin_ae", "indeed_ae"]
-        elif "germany" in country:
-            selected = ["linkedin_germany", "indeed_germany"]
-        elif "united kingdom" in country or "uk" in country or "gb" in country or "london" in location_lower:
-            selected = ["linkedin_uk", "indeed_uk"]
-        elif "poland" in country:
-            selected = ["linkedin_poland"]
-        elif "spain" in country or "barcelona" in location_lower:
-            selected = ["linkedin_spain", "linkedin_barcelona"]
-        elif "canada" in country:
-            selected = ["linkedin_canada"]
-        else:
+            deduped: list[str] = []
+            for name in selected:
+                if name in enabled_names and name not in deduped:
+                    deduped.append(name)
+            return deduped
+
+        selected = self._country_spiders(primary_country, location)
+        if not selected:
             env_overrides["LINKEDIN_LOCATION"] = location
             env_overrides["INDEED_LOCATION"] = location
             selected = ["linkedin", "indeed"]
 
         return [name for name in selected if name in enabled_names]
+

@@ -10,6 +10,7 @@ const VERDICT_META: Record<string, { label: string; className: string }> = {
 const PLATFORM_META: Record<string, { label: string; className: string }> = {
   linkedin: { label: "LinkedIn", className: "linkedin" },
   x: { label: "X", className: "x" },
+  reddit: { label: "Reddit", className: "reddit" },
 };
 
 function tone(score: number): string {

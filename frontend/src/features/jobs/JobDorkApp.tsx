@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "@tanstack/react-router";
 import "./jobdork.css";
 import type { FormState, Job, CountryGroup } from "./types";
 import { postJobSearch } from "./api";
@@ -41,6 +42,9 @@ const COUNTRY_FLAGS: Record<string, string> = {
   kuwait: "🇰🇼",
   bahrain: "🇧🇭",
   oman: "🇴🇲",
+  jordan: "🇯🇴",
+  "middle east": "🌍",
+  mena: "🌍",
   uk: "🇬🇧",
   germany: "🇩🇪",
   canada: "🇨🇦",
@@ -51,7 +55,13 @@ type Status = "idle" | "loading" | "success" | "error";
 type Sort = "score" | "date" | "company";
 
 export function JobDorkApp() {
-  const [form, setForm] = useState<FormState>(INITIAL);
+  const routeSearch = useSearch({ from: "/" });
+  const [form, setForm] = useState<FormState>(() => ({
+    ...INITIAL,
+    // Control-panel scrapes include onsite/hybrid jobs; ?remote=any opens the
+    // search page with Location type "Any" so those results are visible.
+    remote: routeSearch.remote === "any" ? null : INITIAL.remote,
+  }));
   const [status, setStatus] = useState<Status>("idle");
   const [results, setResults] = useState<CountryGroup[]>([]);
   const [totalJobs, setTotalJobs] = useState(0);

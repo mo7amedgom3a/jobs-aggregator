@@ -41,6 +41,16 @@ class BaseJobSpider(Spider):
     # Subclasses must assign this.
     site_config: SiteConfig
 
+    #: True when the source query already restricts results to remote roles
+    #: (e.g. LinkedIn ``f_WT=2``). Such items are treated as remote even when
+    #: the card only shows a city name, unless an onsite/hybrid signal appears.
+    source_remote_filter: bool = False
+
+    #: True when the source query already restricts results to the last 24h
+    #: (e.g. LinkedIn ``f_TPR=r86400`` / Indeed ``fromage=1``). Items without a
+    #: parseable date are trusted instead of being dropped by the date filter.
+    source_recent_filter: bool = False
+
     # ── Spider-level defaults (overridden from SiteConfig at __init_subclass__) ──
     name: str = "base_job_spider"
     start_urls: list[str] = []
@@ -159,30 +169,78 @@ class BaseJobSpider(Spider):
 
     async def on_scraped_item(self, item: dict) -> dict | None:
         """Persist to DB and deduplicate before adding to result list."""
-        # Hard 24-hour window: drop anything older than POSTED_HOURS.
+        import os
+
         from config.settings import POSTED_HOURS, REMOTE_ONLY, STRICT_RECENT
-        from services.filters import is_remote_only, is_within_window
+        from services.filters import (
+            has_onsite_signal,
+            has_remote_signal,
+            is_remote_only,
+            is_within_window,
+        )
 
+        # Control-panel runs intentionally ingest onsite/hybrid/any-location
+        # jobs, so they opt out of the remote-only policy for that run.
+        include_onsite = os.getenv("INCLUDE_ONSITE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        # Hard 24-hour window: drop anything older than POSTED_HOURS. When the
+        # source query already enforces recency (f_TPR / fromage=1) and the card
+        # exposes no date (common on Indeed's new UI), trust the source.
         date_posted = item.get("date_posted") or item.get("posted_at")
-        if not is_within_window(date_posted, hours=POSTED_HOURS, strict=STRICT_RECENT):
-            self.logger.info(
-                "[%s] Dropping item outside the %dh window: %s (posted: %s)",
-                self.name,
-                POSTED_HOURS,
-                item.get("title"),
-                date_posted,
-            )
-            return None
+        if not (self.source_recent_filter and not date_posted):
+            if not is_within_window(date_posted, hours=POSTED_HOURS, strict=STRICT_RECENT):
+                self.logger.info(
+                    "[%s] Dropping item outside the %dh window: %s (posted: %s)",
+                    self.name,
+                    POSTED_HOURS,
+                    item.get("title"),
+                    date_posted,
+                )
+                return None
 
-        # Remote-only policy: reject onsite/hybrid listings.
-        if REMOTE_ONLY and not is_remote_only(item):
-            self.logger.info(
-                "[%s] Dropping non-remote item: %s (location: %s)",
-                self.name,
-                item.get("title"),
-                item.get("location"),
-            )
-            return None
+        # Remote-only policy: reject onsite/hybrid listings. Control-panel
+        # runs set INCLUDE_ONSITE and keep everything instead.
+        if REMOTE_ONLY and not include_onsite:
+            tags = item.get("tags") or []
+            if isinstance(tags, tuple):
+                tags = list(tags)
+            elif not isinstance(tags, list):
+                tags = [str(tags)] if tags else []
+            item["tags"] = tags
+
+            primary_text = " ".join(
+                str(item.get(key) or "")
+                for key in ("location", "title", "company", "description", "salary")
+            ) + " " + " ".join(str(tag) for tag in tags)
+
+            if has_onsite_signal(primary_text):
+                self.logger.info(
+                    "[%s] Dropping onsite/hybrid item: %s (location: %s)",
+                    self.name,
+                    item.get("title"),
+                    item.get("location"),
+                )
+                return None
+
+            if self.source_remote_filter:
+                # The listing came from a remote-only search. Cards usually show
+                # the city instead of "Remote", so record the source signal as a
+                # tag (which the DB and API remote filters understand).
+                if not has_remote_signal(primary_text):
+                    tags.append("Remote")
+            elif not is_remote_only(item):
+                self.logger.info(
+                    "[%s] Dropping non-remote item: %s (location: %s)",
+                    self.name,
+                    item.get("title"),
+                    item.get("location"),
+                )
+                return None
 
         item["_keywords"] = list(self.site_config.keywords or [])
         was_new, fp = save_job(item, source=self.site_config.name)

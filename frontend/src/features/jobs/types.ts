@@ -115,7 +115,9 @@ export interface HiringPostsResponse {
 export interface SocialScanRequest {
   keywords: string[];
   platforms: string[];
+  countries: string[];
   max_posts: number;
+  strict_region?: boolean;
   location?: string | null;
 }
 
@@ -124,9 +126,41 @@ export interface SocialScanResponse {
   message: string;
 }
 
+export interface SocialSessionRequest {
+  platform: string;
+  url?: string | null;
+}
+
+export interface SocialSessionResponse {
+  status: string;
+  message: string;
+  platform: string;
+}
+
 export interface SocialStatusResponse {
   allowed: boolean;
-  platforms: Record<string, { credentials: boolean; saved_session: boolean }>;
+  platforms: Record<
+    string,
+    {
+      credentials: boolean;
+      saved_session: boolean;
+      public_feed?: boolean;
+      oauth_configured?: boolean;
+      subreddits?: string[];
+    }
+  >;
+  sessions?: Record<
+    string,
+    {
+      platform: string;
+      running: boolean;
+      started_at: string | null;
+      finished_at: string | null;
+      url: string;
+      error?: string | null;
+      timed_out?: boolean;
+    }
+  >;
   state: {
     running: boolean;
     platforms: string[];

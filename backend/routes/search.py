@@ -22,12 +22,14 @@ from models.job import (
     HiringPost,
     SocialScanRequest,
     SocialScanResponse,
+    SocialSessionRequest,
+    SocialSessionResponse,
     SocialStatusResponse,
 )
 from repository.jobs import JobRepository
 from services.google_search import GoogleJobSearchService
 from services.orchestrator import JobOrchestrator
-from config.settings import KEYWORDS 
+from config.settings import KEYWORDS, INDEED_KEYWORDS
 logger = logging.getLogger("job_aggregator.routes.search")
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -53,6 +55,16 @@ def resolve_country(job: dict) -> str:
         return "Canada"
     if "spain" in source or "barcelona" in source:
         return "Spain"
+    if "qatar" in source or source.endswith("_qa"):
+        return "Qatar"
+    if "kuwait" in source or source.endswith("_kw"):
+        return "Kuwait"
+    if "bahrain" in source or source.endswith("_bh"):
+        return "Bahrain"
+    if "oman" in source or source.endswith("_om"):
+        return "Oman"
+    if "jordan" in source or source.endswith("_jo"):
+        return "Jordan"
         
     # Check location/tags
     loc = (job.get("location") or "").lower()
@@ -68,6 +80,11 @@ def resolve_country(job: dict) -> str:
         "Spain": ["spain", "barcelona", "madrid"],
         "United States": ["usa", "united states", "us", "new york", "san francisco", "california"],
         "United Kingdom": ["uk", "united kingdom", "london", "england"],
+        "Qatar": ["qatar", "doha"],
+        "Kuwait": ["kuwait", "kuwait city"],
+        "Bahrain": ["bahrain", "manama"],
+        "Oman": ["oman", "muscat"],
+        "Jordan": ["jordan", "amman"],
     }
     
     for country, keywords in countries_to_check.items():
@@ -358,6 +375,19 @@ def find_matching_spiders(country: str, job_board: str) -> list[str]:
         "united kingdom": ["uk", "gb", "united kingdom"],
         "uk": ["uk", "gb", "united kingdom"],
         "gb": ["uk", "gb", "united kingdom"],
+        "qatar": ["qatar", "qa"],
+        "qa": ["qatar", "qa"],
+        "doha": ["qatar", "qa"],
+        "kuwait": ["kuwait", "kw"],
+        "kw": ["kuwait", "kw"],
+        "bahrain": ["bahrain", "bh"],
+        "bh": ["bahrain", "bh"],
+        "oman": ["oman", "om"],
+        "om": ["oman", "om"],
+        "jordan": ["jordan", "jo"],
+        "jo": ["jordan", "jo"],
+        "middle east": ["sa", "ae", "eg", "qa", "kw", "bh", "om", "jo", "saudi", "uae", "egypt", "qatar", "kuwait", "bahrain", "oman", "jordan"],
+        "mena": ["sa", "ae", "eg", "qa", "kw", "bh", "om", "jo", "saudi", "uae", "egypt", "qatar", "kuwait", "bahrain", "oman", "jordan"],
     }
     
     country_targets = country_mappings.get(c, [c])
@@ -389,8 +419,14 @@ async def run_sub_aggregation(
     orchestrator: JobOrchestrator,
     cache: DeduplicationCache,
     repository: JobRepository,
+    include_onsite: bool = True,
 ) -> None:
-    logger.info("Starting background sub-aggregation for country=%s, job_board=%s...", country, job_board)
+    logger.info(
+        "Starting background sub-aggregation for country=%s, job_board=%s (include_onsite=%s)...",
+        country,
+        job_board,
+        include_onsite,
+    )
     try:
         from services.filters import is_blacklisted_company
         import json
@@ -421,6 +457,14 @@ async def run_sub_aggregation(
                 spider_keywords = req.keywords or KEYWORDS
                 
             spider_env = orchestrator._build_env_overrides(req, spider_keywords)
+            # Control-panel triggers scrape one page per board: Indeed needs a
+            # stealth browser and pagination would multiply the Cloudflare wait.
+            spider_env["MAX_PAGES"] = "1"
+            if include_onsite:
+                # Keep onsite/hybrid/any-location jobs and remove LinkedIn's
+                # remote-only query flag (f_WT=2).
+                spider_env["INCLUDE_ONSITE"] = "true"
+                spider_env["LINKEDIN_F_WT"] = ""
             async with semaphore:
                 return await orchestrator.spider_runner.run(name, spider_env)
 
@@ -442,6 +486,35 @@ async def run_sub_aggregation(
                 job for job in results[source]
                 if not is_blacklisted_company(job.get("company"))
             ]
+
+        # Country Indeed boards no longer expose a remote filter and are mostly
+        # onsite. When they yield only a handful of jobs (or none), supplement
+        # with Indeed's global remote pool (www.indeed.com?l=Remote), which is
+        # saved under the `indeed_remote` source and grouped by its actual
+        # location ("Remote" / United States / ...).
+        if (
+            not include_onsite
+            and job_board.lower() == "indeed"
+            and len(results.get("indeed", [])) < 5
+        ):
+            logger.info(
+                "Indeed country board returned %d job(s); adding global remote "
+                "Indeed results",
+                len(results.get("indeed", [])),
+            )
+            try:
+                remote_env = orchestrator._build_env_overrides(req, INDEED_KEYWORDS)
+                remote_env["MAX_PAGES"] = "1"
+                remote_jobs = await orchestrator.spider_runner.run(
+                    "indeed_remote", remote_env
+                )
+                logger.info(
+                    "Global Indeed remote fallback returned %d job(s)",
+                    len(remote_jobs),
+                )
+                results.setdefault("indeed", []).extend(remote_jobs)
+            except Exception as exc:  # noqa: BLE001 - the country run still stands
+                logger.error("Global Indeed remote fallback failed: %s", exc, exc_info=True)
 
         flat_jobs = flatten_results(results, max_results=500, sources=list(results.keys()))
 
@@ -479,7 +552,8 @@ async def search_sub_aggregate(
         job_board=req.job_board,
         orchestrator=orchestrator,
         cache=cache,
-        repository=repository
+        repository=repository,
+        include_onsite=req.include_onsite,
     )
     return {"status": "initiated", "message": f"Sub-aggregation process started in the background for {req.job_board} in {req.country}."}
 
@@ -501,6 +575,11 @@ async def get_supported_countries() -> CountriesResponse:
         ("poland", "Poland"),
         ("spain", "Spain"),
         ("canada", "Canada"),
+        ("qatar", "Qatar"),
+        ("kuwait", "Kuwait"),
+        ("bahrain", "Bahrain"),
+        ("oman", "Oman"),
+        ("jordan", "Jordan"),
     ]
     job_boards = ["linkedin", "indeed"]
     
@@ -572,6 +651,8 @@ def run_social_scan(req: SocialScanRequest) -> None:
             platforms=req.platforms,
             max_posts=req.max_posts,
             location=req.location,
+            countries=req.countries,
+            strict_region=req.strict_region,
         )
         logger.info("Manual social scan finished: %s", summary)
     except Exception as exc:  # noqa: BLE001
@@ -581,7 +662,7 @@ def run_social_scan(req: SocialScanRequest) -> None:
 @router.post(
     "/social/run",
     response_model=SocialScanResponse,
-    summary="Trigger a manual hiring-post scan (LinkedIn / X)",
+    summary="Trigger a manual hiring-post scan (LinkedIn / X / Reddit)",
     description=(
         "Starts a background scan of social hiring posts. Intended to be triggered "
         "from the frontend a few times per day — it is not part of the hourly scheduler."
@@ -593,6 +674,7 @@ async def scan_social_posts(
 ) -> SocialScanResponse:
     from config.settings import SOCIAL_ENABLED
     from services.social import run_state
+    from services.social.session import any_session_running
 
     if not SOCIAL_ENABLED:
         return SocialScanResponse(
@@ -605,6 +687,14 @@ async def scan_social_posts(
             status="already_running",
             message="A social scan is already running. Wait for it to finish.",
         )
+    if any_session_running():
+        return SocialScanResponse(
+            status="error",
+            message=(
+                "A login browser window is open. Finish the login/security check and "
+                "close the window before starting a scan."
+            ),
+        )
 
     background_tasks.add_task(run_social_scan, req)
     return SocialScanResponse(
@@ -613,6 +703,41 @@ async def scan_social_posts(
             f"Scanning {', '.join(req.platforms)} for hiring posts from the last 24 hours. "
             "This can take a minute — refresh the hiring-post results shortly."
         ),
+    )
+
+
+@router.post(
+    "/social/session/open",
+    response_model=SocialSessionResponse,
+    summary="Open a headed browser to log in / clear security checks",
+    description=(
+        "Launches a visible Chromium window with the saved Playwright profile for a "
+        "platform. Use it to re-login or complete a CAPTCHA/2FA, then close the window; "
+        "the persisted session is reused by the next scan."
+    ),
+)
+async def open_social_session(req: SocialSessionRequest) -> SocialSessionResponse:
+    from config.settings import SOCIAL_ENABLED
+    from services.social.session import open_session
+
+    if not SOCIAL_ENABLED:
+        return SocialSessionResponse(
+            status="error",
+            platform=req.platform,
+            message="Social scanning is disabled. Set SOCIAL_ENABLED=true in backend/.env.",
+        )
+
+    try:
+        result = open_session(req.platform, req.url)
+    except ValueError as exc:
+        return SocialSessionResponse(
+            status="error", platform=req.platform, message=str(exc)
+        )
+
+    return SocialSessionResponse(
+        status=result.get("status", "opened"),
+        platform=result.get("platform", req.platform),
+        message=result.get("message", "Browser window opened."),
     )
 
 
@@ -656,17 +781,20 @@ async def list_social_posts(
     "/social/status",
     response_model=SocialStatusResponse,
     summary="Social scan capability & state",
-    description="Reports whether LinkedIn/X credentials and saved sessions are available, plus the last scan result.",
+    description="Reports whether LinkedIn/X/Reddit credentials and sessions are available, plus the last scan result.",
 )
 async def social_status() -> SocialStatusResponse:
     from services.social import platform_status
+    from services.social.session import session_state
 
     status = platform_status()
     return SocialStatusResponse(
         allowed=bool(status.get("enabled")),
         platforms={
-            "linkedin": status.get("linkedin", {}),
-            "x": status.get("x", {}),
+            name: value
+            for name, value in status.items()
+            if name not in {"enabled", "state"} and isinstance(value, dict)
         },
+        sessions=session_state(),
         state=status.get("state", {}),
     )

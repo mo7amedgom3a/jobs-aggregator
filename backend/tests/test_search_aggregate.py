@@ -243,7 +243,8 @@ async def test_search_sub_aggregate_triggers_background_task(mocker: Any) -> Non
         job_board="linkedin",
         orchestrator=mock_orchestrator,
         cache=mock_cache,
-        repository=mock_repository
+        repository=mock_repository,
+        include_onsite=True,
     )
 
 

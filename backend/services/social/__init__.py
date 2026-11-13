@@ -1,4 +1,4 @@
-"""Manual social hiring-post scraping (LinkedIn / X).
+"""Manual social hiring-post scraping (LinkedIn / X / Reddit).
 
 These collectors are triggered from the frontend a few times per day and are
 intentionally excluded from the hourly spider scheduler.

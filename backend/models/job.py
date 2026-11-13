@@ -7,6 +7,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 from config.settings import KEYWORDS, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, DEFAULT_SEARCH_OFFSET
+from services.regions import DEFAULT_REGIONS
 
 class SearchRequest(BaseModel):
     keywords: list[str] = Field(
@@ -277,6 +278,14 @@ class JobSearchRequest(BaseModel):
 class SubAggregateRequest(BaseModel):
     country: str = Field(..., description="Country name (e.g. egypt, saudi, germany).", examples=["egypt"])
     job_board: str = Field(..., description="Job board name (e.g. linkedin, indeed).", examples=["linkedin"])
+    include_onsite: bool = Field(
+        True,
+        description=(
+            "Control-panel mode: keep onsite/hybrid/any-location jobs instead of "
+            "applying the remote-only policy."
+        ),
+        examples=[True],
+    )
 
 
 class CountryInfo(BaseModel):
@@ -336,9 +345,21 @@ class HiringPostsResponse(BaseModel):
 
 class SocialScanRequest(BaseModel):
     keywords: list[str] = Field(default_factory=list, description="Keywords to search for alongside hiring phrases.", examples=[["devops", "python"]])
-    platforms: list[str] = Field(default_factory=lambda: ["linkedin", "x"], description="Platforms to scan (linkedin, x).", examples=[["linkedin"]])
+    platforms: list[str] = Field(default_factory=lambda: ["linkedin", "x", "reddit"], description="Platforms to scan (linkedin, x, reddit).", examples=[["linkedin", "reddit"]])
+    countries: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_REGIONS),
+        description=(
+            "Target MENA countries/regions: egypt, saudi arabia, united arab emirates, "
+            "qatar, kuwait, bahrain, oman, jordan, middle east/mena."
+        ),
+        examples=[["egypt", "saudi arabia", "united arab emirates", "qatar", "middle east"]],
+    )
     max_posts: int = Field(40, ge=1, le=200, description="Maximum posts to collect per platform.")
-    location: Optional[str] = Field(None, description="Optional LinkedIn location filter.", examples=["Egypt"])
+    strict_region: bool = Field(
+        False,
+        description="Keep only posts that mention one of the selected countries/cities/region.",
+    )
+    location: Optional[str] = Field(None, description="Optional LinkedIn location override.", examples=["Egypt"])
 
 
 class SocialScanResponse(BaseModel):
@@ -346,9 +367,32 @@ class SocialScanResponse(BaseModel):
     message: str = Field(description="Human-readable status message.")
 
 
+class SocialSessionRequest(BaseModel):
+    platform: str = Field(
+        ...,
+        description="Platform whose saved browser profile should be opened (linkedin, x, reddit).",
+        examples=["linkedin"],
+    )
+    url: Optional[str] = Field(
+        None,
+        description="Optional page to open instead of the platform's default login/home page.",
+        examples=["https://www.linkedin.com/login"],
+    )
+
+
+class SocialSessionResponse(BaseModel):
+    status: str = Field(description="Session status (opened, already_running, or error).")
+    message: str = Field(description="Human-readable status message.")
+    platform: str = Field(default="", description="Platform the browser was opened for.")
+
+
 class SocialStatusResponse(BaseModel):
     allowed: bool = Field(description="Whether social scanning is enabled in settings.")
     platforms: dict[str, dict] = Field(description="Per-platform credentials/session status.")
+    sessions: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Interactive login-browser state per platform.",
+    )
     state: dict = Field(description="Current/previous scan state and results.")
 
 

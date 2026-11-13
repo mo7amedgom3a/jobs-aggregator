@@ -43,7 +43,12 @@ class SpiderRunner:
 
             cfg.enabled = True
             if "indeed" in spider_name or "linkedin" in spider_name:
-                cfg.max_pages = int(env_overrides.get("MAX_PAGES", "0"))
+                pages = int(env_overrides.get("MAX_PAGES", "0"))
+                # Indeed goes through a stealth browser + Cloudflare, so extra
+                # pages cost minutes; one page per run is enough for a 24h feed.
+                if "indeed" in spider_name and pages > 1:
+                    pages = 1
+                cfg.max_pages = pages
 
             logger.info("Executing spider '%s'", spider_name)
             summary = run_spider(cfg)

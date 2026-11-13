@@ -21,6 +21,22 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 FetcherType = Literal["http", "dynamic", "stealth"]
 
 KEYWORDS = ["software engineer", "DevOps", "backend", "AWS", "terraform", "python", "Golang", "Full Stack", "Engineer", "Devloper", ".NET", "react", "frontend", "AI", "LLM", "API"]
+
+#: Focused query for Indeed. The generic KEYWORDS list includes bare terms like
+#: "Engineer"/"AI" that Indeed matches against civil/mechanical/sales/teaching
+#: roles, flooding country boards with onsite noise.
+INDEED_KEYWORDS = [
+    "software engineer",
+    "devops",
+    "backend developer",
+    "full stack developer",
+    "data engineer",
+    "cloud engineer",
+    "platform engineer",
+    "site reliability engineer",
+    "python developer",
+    "java developer",
+]
 @dataclass
 class SiteConfig:
     name: str
@@ -100,17 +116,19 @@ SITES: list[SiteConfig] = [
     ),
     SiteConfig(
         name="indeed",
-        start_urls=["https://www.indeed.com/m/jobs"],
+        start_urls=["https://www.indeed.com/jobs"],
         keywords=KEYWORDS,
-        fetcher="http",
+        fetcher="stealth",
         download_delay=3.0,
         robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
     # ─── LinkedIn Country-Specific Usecases ────────────────────────────────────
@@ -124,7 +142,7 @@ SITES: list[SiteConfig] = [
     ),
     SiteConfig(
         name="linkedin_eg",
-        start_urls=["https://eg.linkedin.com/jobs/search"],
+        start_urls=["https://eg.linkedin.com/jobs/search?location=Egypt&geoId=106155005"],
         keywords=KEYWORDS,
         fetcher="http",
         download_delay=3.0,
@@ -186,80 +204,234 @@ SITES: list[SiteConfig] = [
         download_delay=3.0,
         robots_txt_obey=False,
     ),
-    # ─── Indeed Country-Specific Usecases ──────────────────────────────────────
+    # ─── Additional MENA LinkedIn boards (remote filtered by f_WT=2) ───────────
     SiteConfig(
-        name="indeed_eg",
-        start_urls=["https://eg.indeed.com/m/jobs"],
+        name="linkedin_qatar",
+        start_urls=["https://qa.linkedin.com/jobs/search?location=Qatar"],
         keywords=KEYWORDS,
         fetcher="http",
         download_delay=3.0,
         robots_txt_obey=False,
+    ),
+    SiteConfig(
+        name="linkedin_kuwait",
+        start_urls=["https://kw.linkedin.com/jobs/search?location=Kuwait"],
+        keywords=KEYWORDS,
+        fetcher="http",
+        download_delay=3.0,
+        robots_txt_obey=False,
+    ),
+    SiteConfig(
+        name="linkedin_bahrain",
+        start_urls=["https://bh.linkedin.com/jobs/search?location=Bahrain"],
+        keywords=KEYWORDS,
+        fetcher="http",
+        download_delay=3.0,
+        robots_txt_obey=False,
+    ),
+    SiteConfig(
+        name="linkedin_oman",
+        start_urls=["https://om.linkedin.com/jobs/search?location=Oman"],
+        keywords=KEYWORDS,
+        fetcher="http",
+        download_delay=3.0,
+        robots_txt_obey=False,
+    ),
+    SiteConfig(
+        name="linkedin_jordan",
+        start_urls=["https://jo.linkedin.com/jobs/search?location=Jordan"],
+        keywords=KEYWORDS,
+        fetcher="http",
+        download_delay=3.0,
+        robots_txt_obey=False,
+    ),
+    # ─── Indeed Country-Specific Usecases ──────────────────────────────────────
+    SiteConfig(
+        name="indeed_eg",
+        start_urls=["https://eg.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
     SiteConfig(
         name="indeed_sa",
-        start_urls=["https://sa.indeed.com/m/jobs"],
+        start_urls=["https://sa.indeed.com/jobs"],
         keywords=KEYWORDS,
-        fetcher="http",
+        fetcher="stealth",
         download_delay=3.0,
         robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
     SiteConfig(
         name="indeed_ae",
-        start_urls=["https://ae.indeed.com/m/jobs"],
+        start_urls=["https://ae.indeed.com/jobs"],
         keywords=KEYWORDS,
-        fetcher="http",
+        fetcher="stealth",
         download_delay=3.0,
         robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
     SiteConfig(
         name="indeed_uk",
         start_urls=["https://uk.indeed.com/jobs?q=software+engineer&l=%22remote%22&fromage=1"],
         keywords=KEYWORDS,
-        fetcher="http",
+        fetcher="stealth",
         download_delay=3.0,
         robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
     SiteConfig(
         name="indeed_germany",
         start_urls=["https://de.indeed.com/jobs?q=Software+Engineer&l=%22remote%22&fromage=1"],
         keywords=KEYWORDS,
-        fetcher="http",
+        fetcher="stealth",
         download_delay=3.0,
         robots_txt_obey=False,
         next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
         extra_fetch_kwargs={
-            "timeout": 30,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.0.0 Mobile/15E148 Safari/604.1"
-            }
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    # ─── Additional MENA Indeed boards (remote-only via sc=DSQF7) ─────────────
+    SiteConfig(
+        name="indeed_qa",
+        start_urls=["https://qa.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    SiteConfig(
+        name="indeed_kw",
+        start_urls=["https://kw.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    SiteConfig(
+        name="indeed_bh",
+        start_urls=["https://bh.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    SiteConfig(
+        name="indeed_om",
+        start_urls=["https://om.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    SiteConfig(
+        name="indeed_jo",
+        start_urls=["https://jo.indeed.com/jobs"],
+        keywords=KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            # Playwright timeouts are milliseconds.
+            "timeout": 90000,
+            # Indeed renders job cards client-side; wait for hydration.
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
+        },
+    ),
+    # Global remote pool. Country boards (eg/sa/...) no longer expose a remote
+    # filter and are onsite-dominated, while www.indeed.com honours l=Remote.
+    SiteConfig(
+        name="indeed_remote",
+        start_urls=["https://www.indeed.com/jobs?l=Remote"],
+        keywords=INDEED_KEYWORDS,
+        fetcher="stealth",
+        download_delay=3.0,
+        robots_txt_obey=False,
+        next_page_selector="a[data-dd-action-name='next-page']::attr(href), a[data-testid='pagination-page-next']::attr(href), a[aria-label='Next Page']::attr(href), a[aria-label='Next']::attr(href), a[aria-label*='Next']::attr(href)",
+        extra_fetch_kwargs={
+            "timeout": 90000,
+            "wait": 8000,
+            "network_idle": True,
+            "load_dom": True,
         },
     ),
 ]
@@ -290,6 +462,10 @@ SOCIAL_ENABLED: bool = os.getenv("SOCIAL_ENABLED", "true").lower() in {"1", "tru
 SOCIAL_MAX_POSTS_PER_PLATFORM: int = int(os.getenv("SOCIAL_MAX_POSTS_PER_PLATFORM", "40"))
 SOCIAL_HEADLESS: bool = os.getenv("SOCIAL_HEADLESS", "false").lower() in {"1", "true", "yes", "on"}
 SOCIAL_NAV_TIMEOUT_MS: int = int(os.getenv("SOCIAL_NAV_TIMEOUT_MS", "45000"))
+# How long an interactive "open login browser" window may stay open before it
+# is closed automatically (seconds). Prevents a forgotten window from blocking
+# scans forever.
+SOCIAL_BROWSER_TIMEOUT: int = int(os.getenv("SOCIAL_BROWSER_TIMEOUT", "900"))
 # Persisted Playwright storage state (cookies) so we do not log in every run.
 SOCIAL_SESSION_DIR: str = os.getenv(
     "SOCIAL_SESSION_DIR",
@@ -359,7 +535,7 @@ def _load_local_auth() -> dict[str, str]:
         "cookie",
         "cookies",
     }
-    known_platforms = {"linkedin", "x", "twitter", "indeed", "google"}
+    known_platforms = {"linkedin", "x", "twitter", "indeed", "google", "reddit"}
 
     index = 0
     while index < len(lines):
@@ -397,6 +573,34 @@ X_USERNAME: str = (
 )
 X_PASSWORD: str = os.getenv("X_PASSWORD") or _LOCAL_AUTH.get("x_password", "")
 X_COOKIES: str = os.getenv("X_COOKIES", "")
+
+# ─── Reddit hiring posts ─────────────────────────────────────────────────────
+# Reddit blocks unauthenticated JSON from many networks, so the collector reads
+# the public Atom feeds (/r/<sub>/new/.rss). If a Reddit "script" app is
+# registered (client id + secret), the OAuth JSON API is used instead, which has
+# much higher rate limits and can use REDDIT_USERNAME/REDDIT_PASSWORD.
+REDDIT_USERNAME: str = os.getenv("REDDIT_USERNAME") or _LOCAL_AUTH.get("reddit_username", "")
+REDDIT_PASSWORD: str = os.getenv("REDDIT_PASSWORD") or _LOCAL_AUTH.get("reddit_password", "")
+REDDIT_CLIENT_ID: str = os.getenv("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET: str = os.getenv("REDDIT_CLIENT_SECRET", "")
+REDDIT_USER_AGENT: str = os.getenv(
+    "REDDIT_USER_AGENT",
+    "job-aggregator/1.0 (manual remote hiring-post scan)",
+)
+# Subreddits that actually carry tech hiring posts. Keep this list small: the
+# public feed limit is tight (roughly one request every 10-15 seconds).
+REDDIT_SUBREDDITS: list[str] = [
+    sub.strip()[2:] if sub.strip().lower().startswith("r/") else sub.strip()
+    for sub in os.getenv(
+        "REDDIT_SUBREDDITS",
+        "forhire,jobbit,remotejobs,hiring",
+    ).split(",")
+    if sub.strip()
+]
+REDDIT_MAX_SUBREDDITS: int = int(os.getenv("REDDIT_MAX_SUBREDDITS", "3"))
+REDDIT_REQUEST_DELAY: float = float(os.getenv("REDDIT_REQUEST_DELAY", "20"))
+REDDIT_RATE_LIMIT_WAIT: float = float(os.getenv("REDDIT_RATE_LIMIT_WAIT", "40"))
+REDDIT_TIMEOUT: int = int(os.getenv("REDDIT_TIMEOUT", "25"))
 
 # ─── YC founder sourcing & outreach ──────────────────────────────────────────
 # The pipeline is triggered manually from the frontend, never by the scheduler.
@@ -477,5 +681,5 @@ MAX_SEARCH_LIMIT: int = 1000
 DEFAULT_SEARCH_OFFSET: int = 0
 DEFAULT_RECENT_HOURS: int = 24
 DEFAULT_INDEED_LIMIT: int = 50  # 0 = no limit, fetch all available within date range
-DEFAULT_MAX_PAGES: int = 0
+DEFAULT_MAX_PAGES: int = 2
 DEFAULT_MAX_CONCURRENT_SPIDERS: int = 2

@@ -50,6 +50,12 @@ _RELATIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Arabic-Indic and Persian digits -> ASCII so relative/absolute dates parse.
+_ARABIC_DIGITS = str.maketrans(
+    "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+    "01234567890123456789",
+)
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -60,14 +66,20 @@ def _as_utc(value: datetime) -> datetime:
 def parse_posted_at(date_str: str | None, now: datetime | None = None) -> datetime | None:
     """Best-effort parse of a posting date into a timezone-aware UTC datetime.
 
-    Handles relative ("2 hours ago", "3d", "just now"), ISO/RFC dates,
-    epoch seconds/milliseconds, and human dates ("May 31", "31 May 2026").
+    Handles relative ("2 hours ago", "3d", "just now", Arabic "قبل ٧ ساعة"),
+    ISO/RFC dates, epoch seconds/milliseconds, and human dates ("May 31").
     Returns ``None`` when the value cannot be interpreted.
     """
     if not date_str:
         return None
 
     text = str(date_str).strip()
+    if not text:
+        return None
+
+    # Normalise Arabic-Indic digits and bidi marks ("قبل ‏٧‏ساعة‏").
+    text = text.translate(_ARABIC_DIGITS).replace("\u200e", " ").replace("\u200f", " ")
+    text = " ".join(text.split())
     if not text:
         return None
 
@@ -79,6 +91,32 @@ def parse_posted_at(date_str: str | None, now: datetime | None = None) -> dateti
         return now
     if "yesterday" in lowered:
         return now - timedelta(days=1)
+
+    # Arabic relative dates: "قبل ٧ ساعة" / "منذ ٢٢ ساعة" / "قبل ٣ أيام".
+    if "قبل" in lowered or "منذ" in lowered:
+        arabic_match = re.search(
+            r"(?:قبل|منذ)\s*(\d+)\s*"
+            r"(ثانية|ثوان\w*|دقيقة|دقائق|دقيقت\w*|ساعة|ساعات|ساعت\w*|"
+            r"يوم|أيام|ايام|يومين|أسبوع|اسابيع|أسابيع|شهر|أشهر|اشهر|سنة|سنوات)",
+            lowered,
+        )
+        if arabic_match:
+            amount = int(arabic_match.group(1))
+            unit = arabic_match.group(2)
+            if unit.startswith(("ثانية", "ثوان")):
+                return now - timedelta(seconds=amount)
+            if unit.startswith(("دقيقة", "دقائق", "دقيقت")):
+                return now - timedelta(minutes=amount)
+            if unit.startswith(("ساعة", "ساعات", "ساعت")):
+                return now - timedelta(hours=amount)
+            if unit.startswith(("يوم", "أيام", "ايام", "يومين")):
+                return now - timedelta(days=amount)
+            if unit.startswith(("أسبوع", "اسابيع", "أسابيع")):
+                return now - timedelta(weeks=amount)
+            if unit.startswith(("شهر", "أشهر", "اشهر")):
+                return now - timedelta(days=amount * 30)
+            if unit.startswith(("سنة", "سنوات")):
+                return now - timedelta(days=amount * 365)
 
     match = _RELATIVE_RE.search(lowered)
     if match and "ago" in lowered or (match and re.fullmatch(r"\d+\s*[smhdwy]", lowered)):
@@ -287,7 +325,8 @@ def is_blacklisted_title(title: str | None) -> bool:
         r"\bquantity\s+surveyor\b",
         r"\bdriver\b", r"\bstorekeeper\b", r"\bwarehouse\b",
         r"\baccountant\b", r"\baccounting\b",
-        r"\bhr\b", r"\bhuman\s+resources\b",
+        r"\bhuman\s+resources\b",
+        r"\bhr\s+(?:manager|director|specialist|business\s+partner|generalist)\b",
         r"\bnurse\b", r"\bdoctor\b", r"\bpharmacist\b",
         r"\bchef\b", r"\bcook\b",
     ]
@@ -306,7 +345,8 @@ REMOTE_PATTERN = re.compile(
     r"\b("
     r"remote|work\s*from\s*home|wfh|telecommut\w*|telework|"
     r"anywhere|worldwide|remote[-\s]?first|fully\s+remote|"
-    r"distributed\s+team|home[-\s]?based"
+    r"distributed\s+team|home[-\s]?based|"
+    r"عن[\s_-]*بعد|من[\s_-]*المنزل|ريموت"
     r")\b",
     re.IGNORECASE,
 )
@@ -315,23 +355,58 @@ REMOTE_PATTERN = re.compile(
 ONSITE_PATTERN = re.compile(
     r"\b("
     r"hybrid|on[-\s]?site|in[-\s]?office|office[-\s]?based|"
-    r"in[-\s]?person|relocation|no\s+remote|non[-\s]?remote"
+    r"in[-\s]?person|relocation|no\s+remote|non[-\s]?remote|"
+    r"هجين|حضوري|من\s*المكتب"
     r")\b",
     re.IGNORECASE,
 )
 
+# Arabic hashtags use underscores (e.g. #وظائف_عن_بعد), which break \b matching.
+ARABIC_REMOTE_PATTERN = re.compile(r"عن[\s_-]*بعد|من[\s_-]*المنزل|ريموت", re.IGNORECASE)
+ARABIC_ONSITE_PATTERN = re.compile(r"هجين|حضوري|من[\s_-]*المكتب", re.IGNORECASE)
+
+#: Strong remote phrasing. Used when only a description snippet is available,
+#: because "experience supporting remote teams" is not a remote role.
+STRONG_REMOTE_PATTERN = re.compile(
+    r"("
+    r"fully\s+remote|100%\s+remote|remote[-\s]?first|"
+    r"remote\s+(?:position|role|job|opportunity)|"
+    r"work\s+from\s+(?:home|anywhere)|wfh|"
+    r"عن[\s_-]*بعد|من[\s_-]*المنزل|ريموت"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def has_strong_remote_signal(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(STRONG_REMOTE_PATTERN.search(text))
+
+
+def has_remote_signal(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(REMOTE_PATTERN.search(text) or ARABIC_REMOTE_PATTERN.search(text))
+
+
+def has_onsite_signal(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(ONSITE_PATTERN.search(text) or ARABIC_ONSITE_PATTERN.search(text))
+
 
 def is_hybrid_or_onsite(text: str | None) -> bool:
-    return bool(text and ONSITE_PATTERN.search(text))
+    return has_onsite_signal(text)
 
 
 def is_remote_text(text: str | None) -> bool:
     """True when text advertises a remote role and does not mention hybrid/onsite."""
     if not text:
         return False
-    if ONSITE_PATTERN.search(text):
+    if has_onsite_signal(text):
         return False
-    return bool(REMOTE_PATTERN.search(text))
+    return has_remote_signal(text)
 
 
 def _job_primary_text(job: dict) -> str:
@@ -351,17 +426,18 @@ def is_remote_only(job: dict) -> bool:
       or (when those are empty) in the description.
     """
     primary = _job_primary_text(job)
-    if ONSITE_PATTERN.search(primary):
+    if has_onsite_signal(primary):
         return False
-    if REMOTE_PATTERN.search(primary):
+    if has_remote_signal(primary):
         return True
 
     description = str(job.get("description") or "")
     if description:
-        # Only trust the description when it is explicit; still reject hybrid.
-        if ONSITE_PATTERN.search(description):
+        # Snippets often mention "remote teams" in the requirements; require
+        # explicit remote phrasing when the fields above are silent.
+        if has_onsite_signal(description):
             return False
-        return bool(REMOTE_PATTERN.search(description))
+        return has_strong_remote_signal(description)
     return False
 
 
@@ -392,6 +468,28 @@ HIRING_PHRASES: list[str] = [
     "share your cv",
     "share your resume",
     "apply now",
+    # Job-alert style posts (no explicit "hiring" word)
+    "remote jobs",
+    "remote job",
+    "job alert",
+    "hiring alert",
+    "job vacancies",
+    "job vacancy",
+    "vacancies",
+    "#remotejobs",
+    "#jobs",
+    "#hiring",
+    "#وظائف",
+    "#توظيف",
+    # Arabic hiring phrases (MENA)
+    "وظائف",
+    "توظيف",
+    "مطلوب",
+    "نبحث عن",
+    "شواغر",
+    "التقديم",
+    "ارسال السيرة",
+    "أرسل سيرتك",
 ]
 
 
@@ -401,7 +499,8 @@ TECH_ROLE_PATTERN = re.compile(
     r"engineer|developer|devops|dev\s?ops|sre|platform|backend|front[-\s]?end|"
     r"full[-\s]?stack|data|analytics|ai|ml|machine\s+learning|llm|cloud|"
     r"security|qa|test\s+automation|architect|scientist|programmer|software|"
-    r"technical|infrastructure|database|network|mobile|ios|android"
+    r"technical|infrastructure|database|network|mobile|ios|android|"
+    r"مهندس|مطور|مبرمج|برمجة|بيانات|وظيفة"
     r")\b",
     re.IGNORECASE,
 )

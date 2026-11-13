@@ -214,36 +214,89 @@ def _ensure_session(page: Any) -> None:
         raise SocialAuthError("X login did not produce an authenticated session.")
 
 
-def build_x_queries(keywords: list[str], days_back: int = 1, max_queries: int = 4) -> list[str]:
-    """Build several live-search queries.
+def build_x_queries(
+    keywords: list[str],
+    countries: list[str] | None = None,
+    days_back: int = 1,
+    max_queries: int = 6,
+) -> list[str]:
+    """Build X live-search queries for remote MENA hiring posts.
 
-    X caps a single live search at a handful of results, so each scan runs a
-    few complementary queries and deduplicates the tweets client-side.
+    X is aggressive about rate-limiting search, so a scan uses a small,
+    rotating set of queries: one English hashtag query, one keyword query, and
+    a few per-country Arabic hashtag queries (countries rotate daily so every
+    MENA country is covered across the week).
     """
-    according_to = ["remote", "anywhere", "worldwide", "wfh", '"work from home"']
-    remote_clause = "(" + " OR ".join(according_to) + ")"
+    from services.regions import DEFAULT_REGIONS, resolve_regions
+
+    regions = resolve_regions(countries)
+    if "middle east" in regions:
+        regions = list(DEFAULT_REGIONS)
+
+    english_terms = [
+        "Saudi", "Riyadh", "UAE", "Dubai", "Egypt", "Cairo",
+        "Qatar", "Doha", "Kuwait", "Bahrain", "Oman", "Jordan", "MENA", "Gulf",
+    ]
+    english_region = "(" + " OR ".join(english_terms) + ")"
+
+    arabic_by_region = {
+        "egypt": "(مصر OR القاهرة)",
+        "saudi arabia": "(السعودية OR الرياض OR جدة)",
+        "united arab emirates": "(الإمارات OR دبي OR \"أبو ظبي\")",
+        "qatar": "(قطر OR الدوحة)",
+        "kuwait": "(الكويت)",
+        "bahrain": "(البحرين)",
+        "oman": "(عمان OR مسقط)",
+        "jordan": "(الأردن OR عمان)",
+    }
 
     now = datetime.now(timezone.utc)
     since = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
     until = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    suffix = f"since:{since} until:{until} -filter:retweets lang:en"
+    suffix = f"since:{since} until:{until} -filter:retweets"
 
     cleaned = [kw.strip() for kw in keywords if str(kw).strip()]
 
-    def fmt(keyword: str) -> str:
-        return f'"{keyword}"' if " " in keyword else keyword
+    queries: list[str] = [
+        f"(#hiring OR #remotejobs OR #jobs OR hiring) {english_region} {suffix} lang:en",
+    ]
 
-    queries: list[str] = []
+    keyword_group = "(" + " OR ".join(
+        f'"{kw}"' if " " in kw else kw for kw in (cleaned[:3] or ["engineer", "developer"])
+    ) + ")"
+    # Global remote hiring posts (useful for MENA candidates; filtered when
+    # strict_region=true because they may not mention a MENA country).
+    queries.append(
+        f"(#remotejobs OR #hiring OR \"work from home\") {keyword_group} "
+        f"(remote OR worldwide) {suffix} lang:en"
+    )
+
     if cleaned:
-        keyword_group = "(" + " OR ".join(fmt(kw) for kw in cleaned[:4]) + ")"
         queries.append(
-            f'("we are hiring" OR "now hiring" OR hiring OR "job opening") '
-            f"{keyword_group} {remote_clause} {suffix}"
+            f"(#hiring OR #remotejobs OR hiring OR \"job opening\") {keyword_group} "
+            f"{english_region} {suffix} lang:en"
         )
-        for keyword in cleaned[:3]:
-            queries.append(f"hiring {fmt(keyword)} {remote_clause} {suffix}")
-    else:
-        queries.append(f"(hiring OR \"job opening\") (engineer OR developer) {remote_clause} {suffix}")
+
+    # Arabic remote-job hashtags across MENA.
+    queries.append(
+        "(#وظائف_عن_بعد OR #عمل_عن_بعد OR \"وظائف عن بعد\" OR \"عمل عن بعد\") "
+        "(مصر OR السعودية OR الإمارات OR قطر OR الكويت OR البحرين OR عمان OR الأردن) "
+        f"{suffix}"
+    )
+
+    # Rotate the per-country queries daily so the small budget covers every MENA
+    # country over several scans without tripping X's search limits.
+    start = now.timetuple().tm_yday % max(1, len(regions))
+    ordered = regions[start:] + regions[:start]
+    for region in ordered:
+        clause = arabic_by_region.get(region)
+        if not clause:
+            continue
+        queries.append(
+            f"(#وظائف OR #توظيف OR وظائف OR توظيف) {clause} {suffix}"
+        )
+        if len(queries) >= max_queries:
+            break
 
     unique: list[str] = []
     for query in queries:
@@ -260,10 +313,11 @@ def build_x_query(keywords: list[str], days_back: int = 1) -> str:
 def collect_x_posts(
     keywords: list[str],
     max_posts: int | None = None,
+    countries: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return raw hiring-post dicts from X live search."""
     limit = max_posts or SOCIAL_MAX_POSTS_PER_PLATFORM
-    queries = build_x_queries(keywords)
+    queries = build_x_queries(keywords, countries)
     logger.info("X queries: %s", queries)
 
     raw_items: list[dict[str, Any]] = []

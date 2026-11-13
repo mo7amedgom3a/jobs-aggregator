@@ -9,6 +9,7 @@ import type {
   HiringPostsResponse,
   SocialScanRequest,
   SocialScanResponse,
+  SocialSessionResponse,
   SocialStatusResponse,
 } from "./types";
 
@@ -89,7 +90,8 @@ export async function postSubAggregate(
   const res = await fetch(`${base}/search/aggregate/sub`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ country, job_board: jobBoard }),
+    // Control-panel scrapes keep onsite/hybrid/any-location jobs.
+    body: JSON.stringify({ country, job_board: jobBoard, include_onsite: true }),
     signal,
   });
   if (!res.ok) {
@@ -198,6 +200,25 @@ export async function runSocialScan(
     throw new Error(`API ${res.status}: ${text || res.statusText}`);
   }
   return res.json() as Promise<SocialScanResponse>;
+}
+
+export async function openSocialSession(
+  platform: string,
+  url?: string,
+  signal?: AbortSignal
+): Promise<SocialSessionResponse> {
+  const base = getApiBase();
+  const res = await fetch(`${base}/search/social/session/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ platform, url: url || null }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
+  }
+  return res.json() as Promise<SocialSessionResponse>;
 }
 
 export async function getSocialStatus(signal?: AbortSignal): Promise<SocialStatusResponse> {

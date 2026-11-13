@@ -62,6 +62,17 @@ def test_parse_posted_at_variants() -> None:
     assert parse_posted_at(None, now=now) is None
 
 
+def test_parse_posted_at_arabic_relative_dates() -> None:
+    now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+
+    # Arabic-Indic digits and bidi marks, as rendered by LinkedIn in MENA.
+    assert parse_posted_at("قبل ‏‏٧‏ساعة‏", now=now) == now - timedelta(hours=7)
+    assert parse_posted_at("قبل ٢٢ ساعة", now=now) == now - timedelta(hours=22)
+    assert parse_posted_at("منذ 3 أيام", now=now) == now - timedelta(days=3)
+    assert parse_posted_at("قبل ١٥ دقيقة", now=now) == now - timedelta(minutes=15)
+    assert parse_posted_at("قبل ٣ أسابيع", now=now) == now - timedelta(weeks=3)
+
+
 def test_hard_24h_window_is_strict_for_unknown_dates() -> None:
     now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -104,6 +115,99 @@ async def test_base_spider_enforces_24h_window(mocker: Any) -> None:
     job_missing = {"title": "React Dev", "url": "http://ok.com/3", "location": "Remote"}
     assert await spider.on_scraped_item(job_missing) is None
     assert mock_save.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_base_spider_trusts_remote_source_filter(mocker: Any) -> None:
+    """LinkedIn f_WT=2 cards show a city, not "Remote"; the source filter counts."""
+    cfg = SiteConfig(name="linkedin_eg", start_urls=["http://example.com"])
+    mock_save = mocker.patch("spiders.base.save_job", return_value=(True, "fingerprint_123"))
+
+    class LinkedInLikeSpider(BaseJobSpider):
+        site_config = cfg
+        source_remote_filter = True
+        source_recent_filter = True
+
+        async def extract_jobs(self, response: Any):
+            yield {}
+
+    spider = LinkedInLikeSpider()
+    spider._run_id = 1
+    spider._items_new = 0
+    spider._items_dupe = 0
+    spider.logger = mocker.MagicMock()
+
+    job = {
+        "title": "Senior DevOps Engineer",
+        "url": "http://example.com/1",
+        "location": "القاهرة القاهرة مصر",
+        "date_posted": "قبل ٧ ساعة",
+    }
+    assert await spider.on_scraped_item(job) is not None
+    assert "Remote" in job["tags"]
+    assert mock_save.call_count == 1
+
+    # Missing date is fine for a source that already filters to the last 24h.
+    no_date = {
+        "title": "Backend Engineer",
+        "url": "http://example.com/2",
+        "location": "Cairo",
+    }
+    assert await spider.on_scraped_item(no_date) is not None
+    assert mock_save.call_count == 2
+
+    # An explicit onsite/hybrid mention still wins over the source filter.
+    onsite = {
+        "title": "Backend Engineer",
+        "url": "http://example.com/3",
+        "location": "Cairo",
+        "description": "Onsite only, no remote.",
+        "date_posted": "2 hours ago",
+    }
+    assert await spider.on_scraped_item(onsite) is None
+    assert mock_save.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_control_mode_keeps_onsite_jobs(monkeypatch: Any, mocker: Any) -> None:
+    """Control-panel runs opt out of the remote-only policy."""
+    monkeypatch.setenv("INCLUDE_ONSITE", "true")
+    cfg = SiteConfig(name="linkedin_eg", start_urls=["http://example.com"])
+    mock_save = mocker.patch("spiders.base.save_job", return_value=(True, "fingerprint_123"))
+
+    class DummySpider(BaseJobSpider):
+        site_config = cfg
+        source_remote_filter = True
+        source_recent_filter = True
+
+        async def extract_jobs(self, response: Any):
+            yield {}
+
+    spider = DummySpider()
+    spider._run_id = 1
+    spider._items_new = 0
+    spider._items_dupe = 0
+    spider.logger = mocker.MagicMock()
+
+    onsite = {
+        "title": "Backend Engineer",
+        "url": "http://example.com/onsite",
+        "location": "Cairo, Egypt",
+        "date_posted": "2 hours ago",
+    }
+    hybrid = {
+        "title": "Platform Engineer",
+        "url": "http://example.com/hybrid",
+        "location": "Riyadh",
+        "description": "Hybrid role, 3 days in office.",
+        "date_posted": "1 hour ago",
+    }
+
+    assert await spider.on_scraped_item(onsite) is not None
+    assert await spider.on_scraped_item(hybrid) is not None
+    assert mock_save.call_count == 2
+    # No synthetic "Remote" tag is added in control mode.
+    assert "Remote" not in onsite.get("tags", [])
 
 
 @pytest.mark.asyncio

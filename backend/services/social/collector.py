@@ -11,6 +11,11 @@ from config.settings import (
     LINKEDIN_EMAIL,
     LINKEDIN_PASSWORD,
     POSTED_HOURS,
+    REDDIT_CLIENT_ID,
+    REDDIT_CLIENT_SECRET,
+    REDDIT_PASSWORD,
+    REDDIT_SUBREDDITS,
+    REDDIT_USERNAME,
     REMOTE_ONLY,
     SOCIAL_ENABLED,
     SOCIAL_MAX_POSTS_PER_PLATFORM,
@@ -24,9 +29,11 @@ from services.filters import (
     is_remote_text,
     is_within_window,
 )
+from services.regions import matches_region
 from services.scoring import score_hiring_post
 from services.social.browser import has_saved_profile
 from services.social.linkedin_posts import collect_linkedin_posts
+from services.social.reddit_posts import collect_reddit_posts
 from services.social.x_posts import collect_x_posts
 
 logger = logging.getLogger("job_aggregator.services.social.collector")
@@ -43,6 +50,7 @@ _STATE: dict[str, Any] = {
 COLLECTORS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "linkedin": collect_linkedin_posts,
     "x": collect_x_posts,
+    "reddit": collect_reddit_posts,
 }
 
 
@@ -56,6 +64,19 @@ def platform_status() -> dict[str, Any]:
         "x": {
             "credentials": bool(X_USERNAME and X_PASSWORD),
             "saved_session": has_saved_profile("x"),
+        },
+        "reddit": {
+            "credentials": bool(REDDIT_USERNAME and REDDIT_PASSWORD),
+            "saved_session": False,
+            # Public Atom feeds need no login, so this source is always usable.
+            "public_feed": True,
+            "oauth_configured": bool(
+                REDDIT_CLIENT_ID
+                and REDDIT_CLIENT_SECRET
+                and REDDIT_USERNAME
+                and REDDIT_PASSWORD
+            ),
+            "subreddits": list(REDDIT_SUBREDDITS),
         },
         "state": run_state(),
     }
@@ -76,9 +97,13 @@ def collect_social_posts(
     platforms: list[str] | None = None,
     max_posts: int | None = None,
     location: str | None = None,
+    countries: list[str] | None = None,
+    strict_region: bool = True,
 ) -> dict[str, Any]:
     """Scrape, filter, score, and persist hiring posts from social platforms."""
-    selected = [p.lower() for p in (platforms or ["linkedin", "x"]) if p]
+    from services.regions import resolve_regions
+
+    selected = [p.lower() for p in (platforms or ["linkedin", "x", "reddit"]) if p]
     selected = [p for p in selected if p in COLLECTORS]
     if not selected:
         selected = list(COLLECTORS)
@@ -87,6 +112,7 @@ def collect_social_posts(
     summary: dict[str, Any] = {
         "platforms": {},
         "errors": {},
+        "countries": resolve_regions(countries),
         "saved": 0,
         "seen": 0,
         "skipped": 0,
@@ -108,12 +134,30 @@ def collect_social_posts(
 
     now = datetime.now(timezone.utc)
     for platform in selected:
+        # The interactive login window locks the Chromium profile directory, so
+        # a scan cannot use the same profile while it is open.
+        from services.social.session import is_session_running
+
+        if is_session_running(platform):
+            message = (
+                "A login browser window is open for this platform. Close it before scanning."
+            )
+            logger.warning("Skipping %s: %s", platform, message)
+            summary["errors"][platform] = message
+            summary["platforms"][platform] = {"fetched": 0, "saved": 0, "skipped": 0}
+            continue
+
         collector = COLLECTORS[platform]
         try:
             if platform == "linkedin":
-                raw_posts = collector(keywords, max_posts=limit, location=location)
+                raw_posts = collector(
+                    keywords,
+                    max_posts=limit,
+                    location=location,
+                    countries=countries,
+                )
             else:
-                raw_posts = collector(keywords, max_posts=limit)
+                raw_posts = collector(keywords, max_posts=limit, countries=countries)
         except Exception as exc:  # noqa: BLE001 - surface every failure to the UI
             logger.error("Social collector '%s' failed: %s", platform, exc, exc_info=True)
             summary["errors"][platform] = str(exc)
@@ -144,6 +188,12 @@ def collect_social_posts(
 
             # Remote-only policy: skip posts that are hybrid/onsite or not remote.
             if REMOTE_ONLY and not is_remote_text(text):
+                platform_stats["skipped"] += 1
+                continue
+
+            # Region policy: keep only posts that mention one of the selected
+            # MENA countries/cities/region (unless the caller opts out).
+            if strict_region and not matches_region(text, countries):
                 platform_stats["skipped"] += 1
                 continue
 

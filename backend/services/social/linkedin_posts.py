@@ -296,31 +296,57 @@ def _ensure_session(page: Any) -> None:
 
 def build_linkedin_queries(
     keywords: list[str],
-    max_queries: int = 4,
+    countries: list[str] | None = None,
+    max_queries: int = 8,
 ) -> list[str]:
-    """Build several content-search queries that reliably return hiring posts.
+    """Build one content-search query per MENA country.
 
-    LinkedIn returns "No results found" for a bare ``hiring`` query, so each
-    query combines a hiring phrase with a concrete keyword.
+    LinkedIn's content search does not support long parenthesised OR clauses
+    (they return "No results found"), so each query is
+    ``<hiring phrase> <keyword> remote <country>``.
     """
-    phrases = ["hiring", '"we are hiring"', "job opening"]
-    cleaned = [kw.strip() for kw in keywords if str(kw).strip()]
+    from services.regions import DEFAULT_REGIONS, resolve_regions
+
+    regions = resolve_regions(countries)
+    if "middle east" in regions:
+        regions = list(DEFAULT_REGIONS)
+
+    # LinkedIn matches country names more reliably than city names in posts.
+    display = {
+        "egypt": "Egypt",
+        "saudi arabia": "Saudi Arabia",
+        "united arab emirates": "UAE",
+        "qatar": "Qatar",
+        "kuwait": "Kuwait",
+        "bahrain": "Bahrain",
+        "oman": "Oman",
+        "jordan": "Jordan",
+    }
+
+    cleaned = [kw.strip() for kw in keywords if str(kw).strip()] or ["engineer"]
+    phrases = ["hiring", '"we are hiring"']
 
     queries: list[str] = []
-    for keyword in cleaned[:2]:
-        target = f'"{keyword}"' if " " in keyword else keyword
-        for phrase in phrases:
-            # Always include "remote" so the collected posts match the remote-only policy.
-            queries.append(f"{phrase} {target} remote")
+    for index, region in enumerate(regions):
+        country = display.get(region, region.title())
+        keyword = cleaned[index % len(cleaned)]
+        phrase = phrases[index % len(phrases)]
+        queries.append(f"{phrase} {keyword} remote {country}")
+        if len(queries) >= max_queries:
+            break
 
-    if not queries:
-        queries = [
-            "hiring engineer remote",
-            '"we are hiring" engineer remote',
-            "job opening developer remote",
-        ]
+    # If fewer countries than the query budget, add a second query per country.
+    if len(queries) < max_queries and len(cleaned) > 1:
+        for index, region in enumerate(regions):
+            country = display.get(region, region.title())
+            keyword = cleaned[(index + 1) % len(cleaned)]
+            phrase = phrases[(index + 1) % len(phrases)]
+            query = f"{phrase} {keyword} remote {country}"
+            if query not in queries:
+                queries.append(query)
+            if len(queries) >= max_queries:
+                break
 
-    # Deduplicate while preserving order, then cap the number of searches.
     unique: list[str] = []
     for query in queries:
         if query not in unique:
@@ -332,10 +358,11 @@ def collect_linkedin_posts(
     keywords: list[str],
     max_posts: int | None = None,
     location: str | None = None,
+    countries: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return raw hiring-post dicts from LinkedIn content search."""
     limit = max_posts or SOCIAL_MAX_POSTS_PER_PLATFORM
-    queries = build_linkedin_queries(keywords)
+    queries = build_linkedin_queries(keywords, countries)
     logger.info("LinkedIn queries: %s", queries)
 
     raw_items: list[dict[str, Any]] = []
